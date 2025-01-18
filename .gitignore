@@ -1,0 +1,27 @@
+# Virtual Environment
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables
+.env
+local.settings.json
+
+# Azure Functions
+bin/
+obj/
+.python_packages/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Test PDFs
+*.pdf 

@@ -1,0 +1,21 @@
+# Azure Services
+azure-functions>=1.17.0  # Latest stable version for Functions runtime v4
+azure-search-documents>=11.5.2  # Latest stable version[35]
+azure-storage-blob>=12.23.0  # Latest stable version[36]
+
+# PDF Processing
+PyMuPDF>=1.25.2  # Latest stable version with improved features[15]
+
+# AI/ML
+openai>=1.59.8  # Latest version with new features[1][6]
+spacy>=3.7.2  # Latest stable version[7]
+transformers>=4.48.0  # Latest version with new models[18]
+
+# Utilities
+python-dotenv>=1.0.1  # Latest version with bug fixes[8]
+python-slugify>=8.0.4  # Latest stable version[9]
+tqdm>=4.67.1  # Latest stable version[21]
+loguru>=0.7.3  # Latest stable version with fixes[11]
+
+# Install spaCy model
+# Run after pip install: python -m spacy download en_core_web_sm
