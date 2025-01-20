@@ -1,7 +1,8 @@
-from pymupdf import fitz  # PyMuPDF 1.25.2
+import pymupdf 
 import re
 from typing import Dict, Optional
 import logging
+from pathlib import Path
 
 class PDFExtractor:
     """Enhanced PDF text extraction for electrical code documents."""
@@ -75,22 +76,26 @@ class PDFExtractor:
         
         return text.strip()
 
-    def extract_text_from_pdf(self, pdf_path: str) -> Dict[int, str]:
+    def extract_text_from_pdf(self, pdf_path: Path, max_pages: int = None) -> Dict[int, str]:
         """
-        Extract text from PDF with page numbers and enhanced cleaning.
+        Extract text from PDF with optional page limit for testing.
         
         Args:
-            pdf_path: Path to the PDF file
-            
+            pdf_path: Path to PDF file
+            max_pages: Optional maximum number of pages to process
+        
         Returns:
-            Dictionary mapping page numbers to cleaned text
+            Dict mapping page numbers to cleaned text
         """
         try:
             self.logger.info(f"Processing PDF: {pdf_path}")
-            doc = fitz.open(pdf_path)
+            doc = pymupdf.open(pdf_path)
             pages_text = {}
             
-            for page_num in range(len(doc)):
+            total_pages = len(doc)
+            pages_to_process = min(max_pages, total_pages) if max_pages else total_pages
+            
+            for page_num in range(pages_to_process):
                 page = doc[page_num]
                 
                 # Extract text with better layout preservation

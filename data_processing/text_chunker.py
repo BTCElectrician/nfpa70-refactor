@@ -1,8 +1,9 @@
 import re
-from collections.abc import List, Dict
-from typing import Optional
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 import logging
+import json
+from openai import OpenAI
 
 @dataclass
 class CodeChunk:
@@ -15,12 +16,14 @@ class CodeChunk:
     section_title: Optional[str] = None
     context_tags: List[str] = field(default_factory=list)
     related_sections: List[str] = field(default_factory=list)
+    gpt_analysis: Dict = field(default_factory=dict)
 
 class ElectricalCodeChunker:
     """Enhanced chunking for electrical code text with comprehensive NEC terminology."""
     
-    def __init__(self):
+    def __init__(self, openai_api_key: Optional[str] = None):
         self.logger = logging.getLogger(__name__)
+        self.client = OpenAI(api_key=openai_api_key) if openai_api_key else None
         
         # Comprehensive NEC terminology mapping
         self.context_mapping = {
@@ -165,6 +168,37 @@ class ElectricalCodeChunker:
         """Find referenced sections in the text."""
         return list(set(self.reference_pattern.findall(text)))
 
+    def analyze_chunk_with_gpt(self, chunk: str) -> Dict:
+        """Use GPT to analyze code chunk content."""
+        if not self.client:
+            return {}
+            
+        prompt = f"""Analyze this NFPA 70 electrical code section and extract:
+        1. Key technical requirements
+        2. Equipment specifications
+        3. Cross-references to other sections
+        4. Safety-critical elements
+
+        Code section:
+        {chunk}
+
+        Provide response in JSON format.
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",  # Fast, affordable small model for focused tasks
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                response_format={ "type": "json_object" }
+            )
+            
+            return json.loads(response.choices[0].message.content)
+            
+        except Exception as e:
+            self.logger.error(f"Error in GPT analysis: {str(e)}")
+            return {}
+
     def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
         """
         Process NFPA 70 content into context-aware chunks.
@@ -201,6 +235,7 @@ class ElectricalCodeChunker:
                     # Save previous chunk if exists
                     if current_chunk:
                         chunk_text = ' '.join(current_chunk)
+                        gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
                         chunks.append(CodeChunk(
                             content=chunk_text,
                             page_number=page_num,
@@ -209,7 +244,8 @@ class ElectricalCodeChunker:
                             section_number=current_section,
                             section_title=current_section_title,
                             context_tags=self._identify_context(chunk_text),
-                            related_sections=self._find_related_sections(chunk_text)
+                            related_sections=self._find_related_sections(chunk_text),
+                            gpt_analysis=gpt_analysis
                         ))
                     
                     current_section = section_match.group(1)
@@ -221,6 +257,7 @@ class ElectricalCodeChunker:
             # Handle last chunk on page
             if current_chunk:
                 chunk_text = ' '.join(current_chunk)
+                gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
                 chunks.append(CodeChunk(
                     content=chunk_text,
                     page_number=page_num,
@@ -229,20 +266,19 @@ class ElectricalCodeChunker:
                     section_number=current_section,
                     section_title=current_section_title,
                     context_tags=self._identify_context(chunk_text),
-                    related_sections=self._find_related_sections(chunk_text)
+                    related_sections=self._find_related_sections(chunk_text),
+                    gpt_analysis=gpt_analysis
                 ))
         
         return chunks
 
 # Compatibility function for existing code
-def chunk_nfpa70_content(text: str) -> List[Dict]:
+def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
     """Wrapper for compatibility with existing code."""
-    chunker = ElectricalCodeChunker()
-    # Convert single text to page format expected by new chunker
-    pages_text = {1: text}  # Assume single page for compatibility
+    chunker = ElectricalCodeChunker(openai_api_key=openai_api_key)
+    pages_text = {1: text}
     chunks = chunker.chunk_nfpa70_content(pages_text)
     
-    # Convert to old format for compatibility
     return [
         {
             "content": chunk.content,
@@ -252,7 +288,8 @@ def chunk_nfpa70_content(text: str) -> List[Dict]:
                 "page": chunk.page_number
             },
             "context_tags": chunk.context_tags,
-            "related_sections": chunk.related_sections
+            "related_sections": chunk.related_sections,
+            "gpt_analysis": chunk.gpt_analysis
         }
         for chunk in chunks
     ] 

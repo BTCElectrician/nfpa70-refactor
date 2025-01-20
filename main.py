@@ -36,7 +36,7 @@ def main() -> None:
         pdf_path: str | None = getenv('PDF_PATH')
         search_service_endpoint: str | None = getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
         search_admin_key: str | None = getenv('AZURE_SEARCH_ADMIN_KEY')
-        index_name: str = getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index')
+        index_name: str = getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor')
         openai_api_key: str | None = getenv('OPENAI_API_KEY')
 
         # Validate environment variables

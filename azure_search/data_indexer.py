@@ -4,6 +4,7 @@ from openai import OpenAI
 from typing import List, Dict, Any
 from loguru import logger
 from tqdm import tqdm
+import json
 
 class DataIndexer:
     """Handles indexing of processed electrical code content into Azure Search."""
@@ -50,23 +51,25 @@ class DataIndexer:
         Returns:
             Document ready for indexing
         """
-        # Extract main content and metadata
         content = chunk["content"]
         metadata = chunk.get("metadata", {})
         
         # Generate embedding for the content
         content_vector = self.generate_embeddings(content)
         
-        # Prepare the document with all necessary fields
+        # Prepare the document with all required fields
         document = {
             "id": f"doc_{chunk_id}",
             "content": content,
-            "page_number": metadata.get("page", 0),
-            "article_number": metadata.get("article", ""),
-            "section_number": metadata.get("section", ""),
+            "page_number": int(metadata.get("page", 0)),  # Ensure int type
+            "article_number": str(metadata.get("article", "")),  # Ensure string type
+            "article_title": chunk.get("article_title", ""),
+            "section_number": str(metadata.get("section", "")),  # Ensure string type
+            "section_title": chunk.get("section_title", ""),
             "content_vector": content_vector,
             "context_tags": chunk.get("context_tags", []),
-            "related_sections": chunk.get("related_sections", [])
+            "related_sections": chunk.get("related_sections", []),
+            "gpt_analysis": json.dumps(chunk.get("gpt_analysis", {}))  # Add GPT analysis
         }
         
         return document

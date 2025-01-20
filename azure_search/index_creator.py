@@ -77,6 +77,11 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True
             ),
+            SearchableField(
+                name="gpt_analysis",
+                type=SearchFieldDataType.String,
+                analyzer_name="en.microsoft"
+            ),
             # Vector field for semantic search
             SearchField(
                 name="content_vector",
