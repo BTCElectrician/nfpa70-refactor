@@ -2,15 +2,23 @@ import json
 import os
 from pathlib import Path
 
-# Third-party imports
-from dotenv import load_dotenv
+# Third-party imports - make sure to install these first
+from dotenv import load_dotenv  # Updated from dotenv
 from loguru import logger
+from azure.search.documents import SearchClient
+from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
     SearchIndex,
     SearchField,
+    SearchFieldDataType,
     VectorSearch,
-    VectorSearchAlgorithmConfiguration,
-    HnswParameters
+    HnswAlgorithmConfiguration,
+    HnswParameters,
+    SemanticConfiguration,
+    SemanticField,
+    SemanticSettings,
+    VectorizedQuery,
+    PrioritizedFields
 )
 
 # Local application imports
@@ -31,6 +39,12 @@ def test_single_chunk_processing():
         search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
         openai_key = os.getenv('OPENAI_API_KEY')
         test_index_name = "nfpa70-test-index"
+
+        # Initialize the Search Index Client
+        index_client = SearchIndexClient(
+            endpoint=search_endpoint,
+            credential=search_key
+        )
 
         # 1. Test PDF Extraction (first page only)
         logger.info("Testing PDF extraction...")
@@ -58,10 +72,10 @@ def test_single_chunk_processing():
 
         # 3. Test Index Creation
         logger.info("\nTesting index creation...")
-        # Update vector search configuration
+        # Updated vector search configuration
         vector_search = VectorSearch(
-            algorithm_configurations=[
-                VectorSearchAlgorithmConfiguration(
+            algorithms=[
+                HnswAlgorithmConfiguration(
                     name="my-vector-config",
                     kind="hnsw",
                     parameters=HnswParameters(
@@ -73,14 +87,39 @@ def test_single_chunk_processing():
                 )
             ]
         )
-        create_search_index(search_endpoint, search_key, test_index_name, vector_search)
+        
+        # Configure semantic search
+        semantic_config = SemanticConfiguration(
+            name="my-semantic-config",
+            prioritized_fields=PrioritizedFields(
+                title_field=SearchField(name="title", type=SearchFieldDataType.String),
+                keywords_fields=[],
+                content_fields=[SearchField(name="content", type=SearchFieldDataType.String)]
+            )
+        )
+        
+        semantic_settings = SemanticSettings(
+            configurations=[semantic_config]
+        )
+
+        # Create index with updated configurations
+        create_search_index(
+            index_client, 
+            test_index_name, 
+            vector_search,
+            semantic_settings
+        )
 
         # 4. Test Single Document Indexing
         logger.info("\nTesting document indexing...")
-        indexer = DataIndexer(
-            service_endpoint=search_endpoint,
-            admin_key=search_key,
+        search_client = SearchClient(
+            endpoint=search_endpoint,
             index_name=test_index_name,
+            credential=search_key
+        )
+        
+        indexer = DataIndexer(
+            search_client=search_client,
             openai_api_key=openai_key
         )
 

@@ -7,8 +7,8 @@ from azure.search.documents.indexes.models import (
     SearchField,
     SearchFieldDataType,
     VectorSearch,
-    HnswVectorSearchAlgorithmConfiguration,
-    SemanticSearch,
+    HnswAlgorithmConfiguration,
+    HnswParameters,
     SemanticConfiguration,
     SemanticField,
     SemanticSettings,
@@ -77,11 +77,6 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True
             ),
-            SearchableField(
-                name="gpt_analysis",
-                type=SearchFieldDataType.String,
-                analyzer_name="en.microsoft"
-            ),
             # Vector field for semantic search
             SearchField(
                 name="content_vector",
@@ -94,14 +89,15 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         # Configure vector search
         vector_search = VectorSearch(
             algorithms=[
-                HnswVectorSearchAlgorithmConfiguration(
+                HnswAlgorithmConfiguration(
                     name="my-vector-config",
-                    parameters={
-                        "m": 4,
-                        "efConstruction": 400,
-                        "efSearch": 500,
-                        "metric": "cosine"
-                    }
+                    kind="hnsw",
+                    parameters=HnswParameters(
+                        m=4,
+                        ef_construction=400,
+                        ef_search=500,
+                        metric="cosine"
+                    )
                 )
             ]
         )
@@ -137,4 +133,4 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
 
     except Exception as e:
         logger.error(f"Error creating index: {str(e)}")
-        raise 
+        raise
