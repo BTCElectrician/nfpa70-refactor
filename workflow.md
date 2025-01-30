@@ -1,8 +1,4 @@
-# BTC Electrician NFPA 70 Refactor Project Workflow
 
-*This document serves as a comprehensive offline record of the BTC Electrician NFPA 70 Refactor project. It includes the complete directory structure, detailed descriptions of each file, and their respective contents. This ensures that the project can be accurately rebuilt from scratch if necessary.*
-
----
 
 ## Table of Contents
 
