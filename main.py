@@ -1,85 +1,78 @@
-from pathlib import Path
-from typing import Final
-from collections.abc import Sequence
-from os import getenv
-from dotenv import load_dotenv
+import os
 import logging
+from dotenv import load_dotenv
 
 from data_processing.pdf_extractor import PDFExtractor
 from data_processing.text_chunker import ElectricalCodeChunker
+from azure_storage.blob_manager import BlobStorageManager
 from azure_search.index_creator import create_search_index
-from azure_search.data_indexer import DataIndexer
 
-# Set up logging with modern configuration
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger: Final = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-# Define required environment variables as constants
-REQUIRED_VARS: Final[Sequence[str]] = (
-    'PDF_PATH',
-    'AZURE_SEARCH_SERVICE_ENDPOINT',
-    'AZURE_SEARCH_ADMIN_KEY',
-    'OPENAI_API_KEY'
-)
-
-def main() -> None:
-    """Main process to extract, process, and index electrical code content."""
+def main():
+    """Extracts PDF text, chunks it, and saves the chunks to blob storage."""
     try:
-        # Load environment variables
         load_dotenv()
-        
-        # Get environment variables with type hints
-        pdf_path: str | None = getenv('PDF_PATH')
-        search_service_endpoint: str | None = getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
-        search_admin_key: str | None = getenv('AZURE_SEARCH_ADMIN_KEY')
-        index_name: str = getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor')
-        openai_api_key: str | None = getenv('OPENAI_API_KEY')
 
-        # Validate environment variables
-        missing_vars = [var for var in REQUIRED_VARS if not getenv(var)]
-        if missing_vars:
-            raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        # Required environment variables
+        pdf_path = os.getenv('PDF_PATH')
+        search_endpoint = os.getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
+        search_admin_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
+        index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index')
+        openai_api_key = os.getenv('OPENAI_API_KEY')
 
-        # Convert string path to Path object and validate
-        pdf_file = Path(pdf_path)
-        if not pdf_file.exists():
-            raise FileNotFoundError(f"PDF file not found: {pdf_file}")
+        # Validate required variables
+        required = [pdf_path, search_endpoint, search_admin_key, openai_api_key]
+        if any(v is None or v.strip() == "" for v in required):
+            raise ValueError("One or more required environment variables are missing.")
 
-        # Extract text from PDF with advanced cleaning
-        logger.info("Extracting text from PDF...")
-        pdf_extractor = PDFExtractor()
-        pages_text = pdf_extractor.extract_text_from_pdf(pdf_file)
-        logger.info(f"Successfully extracted text from {len(pages_text)} pages")
+        # Step 1: Extract PDF text
+        extractor = PDFExtractor()
+        pages_text = extractor.extract_text_from_pdf(pdf_path)
+        logger.info(f"Extracted text from {len(pages_text)} pages.")
 
-        # Process text into context-aware chunks
-        logger.info("Processing text into chunks with electrical context...")
+        # Step 2: Chunk text
         chunker = ElectricalCodeChunker()
         chunks = chunker.chunk_nfpa70_content(pages_text)
-        logger.info(f"Created {len(chunks)} context-aware chunks")
+        logger.info(f"Created {len(chunks)} text chunks.")
 
-        # Create or update search index with enhanced schema
-        logger.info("Creating search index...")
-        create_search_index(search_service_endpoint, search_admin_key, index_name)
+        # Optional: Save processed chunks to blob storage
+        try:
+            blob_manager = BlobStorageManager(container_name="processed-data", blob_name="nfpa70_chunks.json")
+            # Convert chunk dataclass list to a serializable list of dicts
+            chunk_dicts = [
+                {
+                    "content": c.content,
+                    "metadata": {
+                        "article": c.article_number,
+                        "section": c.section_number,
+                        "page": c.page_number
+                    },
+                    "context_tags": c.context_tags,
+                    "related_sections": c.related_sections
+                }
+                for c in chunks
+            ]
+            blob_manager.save_processed_data({"chunks": chunk_dicts})
+            logger.info("Saved chunked data to blob storage for later indexing.")
+        except Exception as e:
+            logger.warning(f"Failed to save chunks to blob storage: {e}")
 
-        # Index the documents with embeddings and context tags
-        logger.info("Indexing documents...")
-        indexer = DataIndexer(
-            service_endpoint=search_service_endpoint,
-            admin_key=search_admin_key,
-            index_name=index_name,
-            openai_api_key=openai_api_key
-        )
-        indexer.index_documents(chunks)
+        # Optionally, create or update the search index.
+        # This does not perform document indexing—it only sets up the index schema.
+        create_search_index(search_endpoint, search_admin_key, index_name)
+        logger.info(f"Search index '{index_name}' created/updated successfully.")
 
-        logger.info("Process completed successfully!")
+        # Note: We are not calling the DataIndexer/index_documents here.
+        logger.info("Main process completed without indexing. To index the data, run index_from_blob.py separately.")
 
     except Exception as e:
         logger.error(f"Error in main process: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    main() 
+    main()
