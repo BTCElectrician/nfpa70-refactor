@@ -1,3 +1,4 @@
+import os
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
@@ -8,7 +9,7 @@ from azure.search.documents.indexes.models import (
     SearchFieldDataType,
     VectorSearch,
     HnswAlgorithmConfiguration,
-    HnswParameters,
+    VectorSearchAlgorithmMetric,
     SemanticConfiguration,
     SemanticField,
     SemanticSettings,
@@ -18,18 +19,12 @@ from loguru import logger
 
 def create_search_index(service_endpoint: str, admin_key: str, index_name: str) -> None:
     """
-    Create an enhanced search index for electrical code content.
-    
-    Args:
-        service_endpoint: Azure Search service endpoint
-        admin_key: Azure Search admin key
-        index_name: Name for the search index
+    Create or update an Azure Cognitive Search index with vector search enabled.
     """
     try:
         credential = AzureKeyCredential(admin_key)
         index_client = SearchIndexClient(endpoint=service_endpoint, credential=credential)
 
-        # Define fields for the index
         fields = [
             SimpleField(name="id", type=SearchFieldDataType.String, key=True),
             SearchableField(
@@ -43,16 +38,12 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 filterable=True,
                 sortable=True
             ),
+            # Example additional fields
             SearchableField(
                 name="article_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
                 facetable=True
-            ),
-            SearchableField(
-                name="article_title",
-                type=SearchFieldDataType.String,
-                filterable=True
             ),
             SearchableField(
                 name="section_number",
@@ -61,65 +52,46 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 facetable=True
             ),
             SearchableField(
-                name="section_title",
-                type=SearchFieldDataType.String,
-                filterable=True
-            ),
-            SearchableField(
                 name="context_tags",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True,
                 facetable=True,
                 searchable=True
             ),
-            SearchableField(
-                name="related_sections",
-                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
-                filterable=True
-            ),
-            # Vector field for semantic search
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                vector_search_dimensions=1536,
-                vector_search_profile_name="my-vector-config",
+                vector_search_dimensions=1536,       # Align w/ embedding model
+                vector_search_configuration="myHnsw" # Name must match config
             ),
         ]
 
-        # Configure vector search
+        # Basic VectorSearch config
         vector_search = VectorSearch(
+            # A list of algorithm configurations
             algorithms=[
                 HnswAlgorithmConfiguration(
-                    name="my-vector-config",
-                    kind="hnsw",
-                    parameters=HnswParameters(
-                        m=4,
-                        ef_construction=400,
-                        ef_search=500,
-                        metric="cosine"
-                    )
+                    name="myHnsw",
+                    # If your azure-search-documents version supports metric
+                    parameters={
+                        "m": 16,
+                        "efConstruction": 200,
+                        "metric": VectorSearchAlgorithmMetric.COSINE
+                    }
                 )
             ]
         )
 
-        # Configure semantic search for field-oriented queries
+        # Optional semantic config
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
             prioritized_fields=PrioritizedFields(
-                title_field=SemanticField(field_name="section_title"),
-                keywords_fields=[
-                    SemanticField(field_name="context_tags"),
-                    SemanticField(field_name="article_title")
-                ],
+                title_field=SemanticField(field_name="section_number"),
                 content_fields=[SemanticField(field_name="content")]
             )
         )
+        semantic_settings = SemanticSettings(configurations=[semantic_config])
 
-        semantic_settings = SemanticSettings(
-            configurations=[semantic_config]
-        )
-
-        # Create the index
         index = SearchIndex(
             name=index_name,
             fields=fields,
@@ -127,10 +99,10 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             semantic_settings=semantic_settings
         )
 
-        logger.info(f"Creating {index_name} search index...")
+        logger.info(f"Creating or updating search index '{index_name}' ...")
         index_client.create_or_update_index(index)
-        logger.info(f"Index {index_name} created successfully.")
+        logger.info(f"Index '{index_name}' created/updated successfully.")
 
     except Exception as e:
-        logger.error(f"Error creating index: {str(e)}")
+        logger.error(f"Error creating/updating index: {str(e)}")
         raise
