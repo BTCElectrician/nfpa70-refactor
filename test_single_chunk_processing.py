@@ -37,10 +37,10 @@ def test_single_chunk_processing():
         if not all([pdf_path, search_endpoint, search_key, openai_key]):
             raise ValueError("Missing one or more required environment variables.")
 
-        # 2. Extract from PDF (first page only for speed)
-        logger.info("Extracting text from PDF (1 page max)...")
+        # 2. Extract from PDF (first three pages for testing)
+        logger.info("Extracting text from PDF (3 pages max)...")
         extractor = PDFExtractor()
-        pages_text = extractor.extract_text_from_pdf(Path(pdf_path), max_pages=1)
+        pages_text = extractor.extract_text_from_pdf(Path(pdf_path), max_pages=3)
 
         # Just log a small snippet
         if pages_text:
