@@ -20,6 +20,7 @@ from loguru import logger
 def create_search_index(service_endpoint: str, admin_key: str, index_name: str) -> None:
     """
     Create or update an Azure Cognitive Search index with vector search enabled.
+    Includes fields like article_title, section_title, and gpt_analysis if desired.
     """
     try:
         credential = AzureKeyCredential(admin_key)
@@ -30,7 +31,10 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             SearchableField(
                 name="content", 
                 type=SearchFieldDataType.String,
-                analyzer_name="en.microsoft"
+                analyzer_name="en.microsoft",
+                searchable=True,
+                filterable=False,
+                facetable=False
             ),
             SimpleField(
                 name="page_number", 
@@ -38,18 +42,40 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 filterable=True,
                 sortable=True
             ),
-            # Example additional fields
             SearchableField(
                 name="article_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
-                facetable=True
+                facetable=True,
+                searchable=True
             ),
             SearchableField(
                 name="section_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
-                facetable=True
+                facetable=True,
+                searchable=True
+            ),
+            SearchableField(
+                name="article_title",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True,
+                searchable=True
+            ),
+            SearchableField(
+                name="section_title",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True,
+                searchable=True
+            ),
+            SearchableField(
+                name="related_sections",
+                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
+                filterable=True,
+                facetable=True,
+                searchable=True
             ),
             SearchableField(
                 name="context_tags",
@@ -58,21 +84,27 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 facetable=True,
                 searchable=True
             ),
+            SearchableField(
+                name="gpt_analysis",
+                type=SearchFieldDataType.String,
+                filterable=False,
+                facetable=False,
+                searchable=False  # or True if you want to search GPT output
+            ),
+            # Vector field for semantic search
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                vector_search_dimensions=1536,       # Align w/ embedding model
-                vector_search_configuration="myHnsw" # Name must match config
+                vector_search_dimensions=1536,       # Align w/ your chosen embedding model
+                vector_search_configuration="myHnsw"
             ),
         ]
 
-        # Basic VectorSearch config
+        # Configure vector search
         vector_search = VectorSearch(
-            # A list of algorithm configurations
             algorithms=[
                 HnswAlgorithmConfiguration(
                     name="myHnsw",
-                    # If your azure-search-documents version supports metric
                     parameters={
                         "m": 16,
                         "efConstruction": 200,
@@ -86,7 +118,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
             prioritized_fields=PrioritizedFields(
-                title_field=SemanticField(field_name="section_number"),
+                title_field=SemanticField(field_name="section_title"),
                 content_fields=[SemanticField(field_name="content")]
             )
         )

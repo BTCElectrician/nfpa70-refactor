@@ -43,7 +43,7 @@ class ElectricalCodeChunker:
             
             'raceway': [
                 'EMT', 'IMC', 'RMC', 'PVC', 'RTRC', 'LFMC', 'LFNC', 'FMC',
-                'electrical metallic tubing', 'intermediate metal conduit', 
+                'electrical metallic tubing', 'intermediate metal conduit',
                 'rigid metal conduit', 'liquidtight flexible metal conduit',
                 'schedule 40', 'schedule 80', 'nipple', 'chase', 'sleeve'
             ],
@@ -148,7 +148,7 @@ class ElectricalCodeChunker:
             ]
         }
         
-        # Compile regex patterns
+        # Regex patterns
         self.article_pattern = re.compile(r'ARTICLE\s+(\d+)\s*[-—]\s*(.+?)(?=\n|$)')
         self.section_pattern = re.compile(r'(\d+\.\d+(?:\([A-Z]\))?)\s+(.+?)(?=\n|$)')
         self.reference_pattern = re.compile(r'(?:see\s+(?:Section\s+)?|with\s+)(\d+\.\d+(?:\([A-Z]\))?)')
@@ -157,11 +157,9 @@ class ElectricalCodeChunker:
         """Identify technical context tags for the text."""
         text_lower = text.lower()
         tags = []
-        
         for context, keywords in self.context_mapping.items():
             if any(keyword in text_lower for keyword in keywords):
                 tags.append(context)
-        
         return tags
 
     def _find_related_sections(self, text: str) -> List[str]:
@@ -169,10 +167,10 @@ class ElectricalCodeChunker:
         return list(set(self.reference_pattern.findall(text)))
 
     def analyze_chunk_with_gpt(self, chunk: str) -> Dict:
-        """Use GPT to analyze code chunk content."""
+        """Use GPT to analyze or clean up chunk content."""
         if not self.client:
             return {}
-            
+        
         prompt = f"""Analyze this NFPA 70 electrical code section and extract:
         1. Key technical requirements
         2. Equipment specifications
@@ -184,17 +182,14 @@ class ElectricalCodeChunker:
 
         Provide response in JSON format.
         """
-        
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Fast, affordable small model for focused tasks
+                model="gpt-4o-mini",  # Example model
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={ "type": "json_object" }
             )
-            
             return json.loads(response.choices[0].message.content)
-            
         except Exception as e:
             self.logger.error(f"Error in GPT analysis: {str(e)}")
             return {}
@@ -232,7 +227,7 @@ class ElectricalCodeChunker:
                 # Check for section header
                 section_match = self.section_pattern.match(line)
                 if section_match:
-                    # Save previous chunk if exists
+                    # Save previous chunk if it exists
                     if current_chunk:
                         chunk_text = ' '.join(current_chunk)
                         gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
@@ -248,6 +243,7 @@ class ElectricalCodeChunker:
                             gpt_analysis=gpt_analysis
                         ))
                     
+                    # Start a new chunk
                     current_section = section_match.group(1)
                     current_section_title = section_match.group(2).strip()
                     current_chunk = [line]
@@ -272,7 +268,7 @@ class ElectricalCodeChunker:
         
         return chunks
 
-# Compatibility function for existing code
+# Compatibility function for older code calling
 def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
     """Wrapper for compatibility with existing code."""
     chunker = ElectricalCodeChunker(openai_api_key=openai_api_key)
@@ -292,4 +288,4 @@ def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> Lis
             "gpt_analysis": chunk.gpt_analysis
         }
         for chunk in chunks
-    ] 
+    ]

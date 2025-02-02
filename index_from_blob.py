@@ -9,6 +9,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 def main():
+    """
+    Loads the pre-chunked data from blob storage and indexes it into Azure Cognitive Search.
+    """
     load_dotenv()
     
     # Load environment variables for indexing
@@ -17,16 +20,16 @@ def main():
     index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index')
     openai_api_key = os.getenv('OPENAI_API_KEY')
     
-    # Load chunked data from Blob Storage
+    # Step 1: Load chunked data from Blob Storage
     blob_manager = BlobStorageManager(container_name="processed-data", blob_name="nfpa70_chunks.json")
     blob_data = blob_manager.load_processed_data()
     chunks = blob_data.get("chunks", [])
-    
+
     if not chunks:
         logger.error("No chunk data found in blob storage. Exiting.")
         return
     
-    # Index documents using DataIndexer
+    # Step 2: Index documents using DataIndexer
     indexer = DataIndexer(
         service_endpoint=search_endpoint,
         admin_key=search_admin_key,

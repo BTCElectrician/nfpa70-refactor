@@ -14,7 +14,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
-    """Extracts PDF text, chunks it, and saves the chunks to blob storage."""
+    """Extracts PDF text, chunks it (including GPT analysis if openai_api_key is set),
+    and saves the chunks to blob storage. Optionally creates/updates the search index schema.
+    """
     try:
         load_dotenv()
 
@@ -35,40 +37,44 @@ def main():
         pages_text = extractor.extract_text_from_pdf(pdf_path)
         logger.info(f"Extracted text from {len(pages_text)} pages.")
 
-        # Step 2: Chunk text
-        chunker = ElectricalCodeChunker()
+        # Step 2: Chunk text (includes optional GPT analysis if openai_api_key is valid)
+        chunker = ElectricalCodeChunker(openai_api_key=openai_api_key)
         chunks = chunker.chunk_nfpa70_content(pages_text)
         logger.info(f"Created {len(chunks)} text chunks.")
 
-        # Optional: Save processed chunks to blob storage
+        # Step 3: Convert chunk objects into dictionaries (including new fields)
+        logger.info("Creating chunk dictionaries with all relevant fields...")
+        chunk_dicts = []
+        for c in chunks:
+            chunk_dicts.append({
+                "content": c.content,
+                "metadata": {
+                    "article": c.article_number,
+                    "section": c.section_number,
+                    "page": c.page_number
+                },
+                "context_tags": c.context_tags,
+                "related_sections": c.related_sections,
+                "article_title": c.article_title or "",
+                "section_title": c.section_title or "",
+                # If not doing GPT analysis, this can be an empty dict
+                "gpt_analysis": c.gpt_analysis or {}
+            })
+
+        # Step 4: Save processed chunks to blob storage
         try:
             blob_manager = BlobStorageManager(container_name="processed-data", blob_name="nfpa70_chunks.json")
-            # Convert chunk dataclass list to a serializable list of dicts
-            chunk_dicts = [
-                {
-                    "content": c.content,
-                    "metadata": {
-                        "article": c.article_number,
-                        "section": c.section_number,
-                        "page": c.page_number
-                    },
-                    "context_tags": c.context_tags,
-                    "related_sections": c.related_sections
-                }
-                for c in chunks
-            ]
             blob_manager.save_processed_data({"chunks": chunk_dicts})
             logger.info("Saved chunked data to blob storage for later indexing.")
         except Exception as e:
             logger.warning(f"Failed to save chunks to blob storage: {e}")
 
-        # Optionally, create or update the search index.
-        # This does not perform document indexing—it only sets up the index schema.
+        # Optional: Create or update the search index (schema only, no docs indexed here).
         create_search_index(search_endpoint, search_admin_key, index_name)
         logger.info(f"Search index '{index_name}' created/updated successfully.")
 
-        # Note: We are not calling the DataIndexer/index_documents here.
-        logger.info("Main process completed without indexing. To index the data, run index_from_blob.py separately.")
+        logger.info("Main process completed without indexing. "
+                    "To index the data, run index_from_blob.py separately.")
 
     except Exception as e:
         logger.error(f"Error in main process: {str(e)}")
