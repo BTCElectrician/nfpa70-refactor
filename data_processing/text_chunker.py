@@ -197,25 +197,26 @@ class ElectricalCodeChunker:
         {chunk}
 
         Provide response in JSON format with these exact keys:
-        {
-            "structure_check": {
+        {{
+            "structure_check": {{
                 "article_number": "",
                 "section_number": "",
                 "subsections": [],
-                "is_complete": true/false,
+                "is_complete": true,
                 "issues": []
-            },
-            "technical_analysis": {
+            }},
+            "technical_analysis": {{
                 "requirements": [],
                 "specifications": [],
                 "cross_references": [],
                 "safety_elements": [],
                 "definitions": []
-            }
-        }"""
+            }}
+        }}"""
+
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Keeping the existing model
+                model="gpt-4o-mini",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={ "type": "json_object" }

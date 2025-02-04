@@ -6,6 +6,7 @@ from loguru import logger
 
 # Azure
 from azure.search.documents import SearchClient
+from azure.search.documents.models import VectorizedQuery
 from azure.core.credentials import AzureKeyCredential
 
 # Local application imports
@@ -49,6 +50,7 @@ def validate_environment():
 def test_single_chunk_processing():
     """
     Tests the pipeline on a single chunk of text with enhanced vector validation.
+    Updated for current Azure Search vector query syntax.
     """
     try:
         # Set up logging
@@ -122,18 +124,29 @@ def test_single_chunk_processing():
             indexer.index_documents([chunk_dict])
             logger.info("Successfully indexed first chunk")
 
-            # 7. Verify indexed content
+            # 7. Verify indexed content using current vector search syntax
             search_client = SearchClient(
                 endpoint=search_endpoint,
                 index_name=test_index_name,
                 credential=AzureKeyCredential(search_key)
             )
             
+            # Get the embedding for verification search
+            vector = indexer.generate_embeddings(chunk_dict["content"])
+            
+            # Perform vector search with updated syntax
             results = search_client.search(
-                search_text="*",
-                select=["id", "content", "page_number"],
-                top=5
+                search_text="",  # Empty for pure vector search
+                vector_queries=[
+                    VectorizedQuery(
+                        vector=vector,
+                        fields="content_vector",
+                        k=5
+                    )
+                ],
+                select=["id", "content", "page_number"]
             )
+            
             hits = list(results)
             logger.info(f"Found {len(hits)} documents in test index")
             
