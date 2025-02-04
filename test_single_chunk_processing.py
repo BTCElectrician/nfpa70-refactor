@@ -14,25 +14,56 @@ from data_processing.text_chunker import ElectricalCodeChunker
 from azure_search.index_creator import create_search_index
 from azure_search.data_indexer import DataIndexer
 
+def setup_logging():
+    """Configure detailed logging for testing."""
+    logger.remove()  # Remove default handler
+    logger.add(
+        "debug.log",
+        format="{time} | {level} | {module}:{function}:{line} - {message}",
+        level="DEBUG",
+        rotation="1 day"
+    )
+    logger.add(
+        lambda msg: print(msg),
+        format="{time:HH:mm:ss} | {level} | {message}",
+        level="INFO"
+    )
+
+def validate_environment():
+    """Validate all required environment variables are present."""
+    required_vars = {
+        'PDF_PATH': 'Path to the PDF file',
+        'AZURE_SEARCH_SERVICE_ENDPOINT': 'Azure Search service endpoint',
+        'AZURE_SEARCH_ADMIN_KEY': 'Azure Search admin key',
+        'OPENAI_API_KEY': 'OpenAI API key for embeddings'
+    }
+    
+    missing = []
+    for var, description in required_vars.items():
+        if not os.getenv(var):
+            missing.append(f"{var} ({description})")
+    
+    if missing:
+        raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+
 def test_single_chunk_processing():
     """
-    Tests the pipeline on a single chunk of text (first page).
+    Tests the pipeline on a single chunk of text with enhanced vector validation.
     """
     try:
-        # Configure debug logging
-        logger.add("debug.log", level="DEBUG")
+        # Set up logging
+        setup_logging()
+        logger.info("Starting test processing with vector validation")
         
-        # 1. Load environment variables
-        load_dotenv()
+        # 1. Validate environment
+        validate_environment()
+        
+        # Load environment variables
         pdf_path = os.getenv('PDF_PATH')
         search_endpoint = os.getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
         search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
         openai_key = os.getenv('OPENAI_API_KEY')
-        
-        test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index-test')
-
-        if not all([pdf_path, search_endpoint, search_key, openai_key]):
-            raise ValueError("Missing one or more required environment variables.")
+        test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-test')
 
         # 2. Extract from PDF (first three pages for testing)
         logger.info("Extracting text from PDF (3 pages max)...")
@@ -41,20 +72,20 @@ def test_single_chunk_processing():
 
         if pages_text:
             first_page_num = list(pages_text.keys())[0]
-            logger.info(f"First page text preview:\n{pages_text[first_page_num][:500]}...")
+            logger.info(f"First page text sample: {pages_text[first_page_num][:200]}...")
         else:
-            logger.warning("No text extracted. Is the PDF empty?")
+            logger.warning("No text extracted from PDF")
+            return
 
         # 3. Chunk the text
-        logger.info("Chunking text into code chunks...")
+        logger.info("Processing text into chunks...")
         chunker = ElectricalCodeChunker(openai_api_key=openai_key)
         chunks = chunker.chunk_nfpa70_content(pages_text)
-        logger.info(f"Number of chunks created: {len(chunks)}")
+        logger.info(f"Created {len(chunks)} chunks")
 
-        # 4. Create or update the index
-        logger.info(f"Creating/Updating the test index: {test_index_name} ...")
+        # 4. Create/update the index
+        logger.info(f"Setting up test index: {test_index_name}")
         create_search_index(search_endpoint, search_key, test_index_name)
-        logger.info("Index creation/update complete.")
 
         # 5. Initialize the DataIndexer
         indexer = DataIndexer(
@@ -64,12 +95,12 @@ def test_single_chunk_processing():
             openai_api_key=openai_key
         )
 
-        # 6. Index only the first chunk
+        # 6. Process and index first chunk only
         if chunks:
             first_chunk = chunks[0]
-            logger.debug(f"[test] First chunk raw structure: {first_chunk.__dict__}")
+            logger.debug(f"First chunk structure: {json.dumps(first_chunk.__dict__, indent=2)}")
             
-            # Convert it to the dictionary format matching blob storage format
+            # Convert to expected dictionary format
             chunk_dict = {
                 "content": first_chunk.content,
                 "metadata": {
@@ -81,29 +112,39 @@ def test_single_chunk_processing():
                 "related_sections": list(first_chunk.related_sections or []),
                 "article_title": first_chunk.article_title or "",
                 "section_title": first_chunk.section_title or "",
-                "gpt_analysis": json.dumps(first_chunk.gpt_analysis or {})  # Pre-stringify gpt_analysis
+                "gpt_analysis": first_chunk.gpt_analysis or {}
             }
             
-            # Log the chunk structure for debugging
-            logger.info(f"Chunk dictionary being sent to indexer: {json.dumps(chunk_dict, indent=2)}")
-            logger.debug(f"[test] gpt_analysis type: {type(chunk_dict['gpt_analysis'])}")
+            # Log the chunk structure
+            logger.info("Preparing to index first chunk...")
+            logger.debug(f"Chunk dictionary: {json.dumps(chunk_dict, indent=2)}")
             
-            logger.info("Indexing the first chunk only...")
+            # Index the chunk
             indexer.index_documents([chunk_dict])
+            logger.info("Successfully indexed first chunk")
+
+            # 7. Verify indexed content
+            search_client = SearchClient(
+                endpoint=search_endpoint,
+                index_name=test_index_name,
+                credential=AzureKeyCredential(search_key)
+            )
+            
+            # Test basic search
+            results = search_client.search(
+                search_text="*",
+                select=["id", "content", "page_number"],
+                top=5
+            )
+            hits = list(results)
+            logger.info(f"Found {len(hits)} documents in test index")
+            
+            if hits:
+                logger.info("Test completed successfully!")
+            else:
+                logger.warning("No documents found in index after upload")
         else:
-            logger.warning("No chunks to index.")
-
-        # 7. Quick search test
-        search_client = SearchClient(
-            endpoint=search_endpoint,
-            index_name=test_index_name,
-            credential=AzureKeyCredential(search_key)
-        )
-        results = search_client.search(search_text="electric", top=5)
-        hits = list(results)
-        logger.info(f"Found {len(hits)} results when searching for 'electric' in test index.")
-
-        logger.info("Test completed successfully!")
+            logger.warning("No chunks created from PDF")
 
     except Exception as e:
         logger.error(f"Test failed: {str(e)}")

@@ -22,7 +22,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
     """
     Create or update an Azure Cognitive Search index with vector search enabled.
     Includes fields like article_title, section_title, and gpt_analysis.
-    Updated for azure-search-documents==11.5.2 with correct vector profile configuration.
+    Updated for azure-search-documents==11.5.2 with correct vector configuration.
     """
     try:
         credential = AzureKeyCredential(admin_key)
@@ -32,86 +32,14 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         try:
             index_client.delete_index(index_name)
             logger.info(f"Deleted existing index '{index_name}'")
-        except Exception as e:
+        except Exception:
             logger.info(f"Index '{index_name}' does not exist yet")
 
-        fields = [
-            SimpleField(name="id", type=SearchFieldDataType.String, key=True, 
-                       filterable=True, retrievable=True),
-            SearchableField(
-                name="content",
-                type=SearchFieldDataType.String,
-                searchable=True,
-                retrievable=True,
-                analyzer_name="standard.lucene"
-            ),
-            SimpleField(
-                name="page_number",
-                type=SearchFieldDataType.Int32,
-                filterable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="article_number",
-                type=SearchFieldDataType.String,
-                filterable=True,
-                facetable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="section_number",
-                type=SearchFieldDataType.String,
-                filterable=True,
-                facetable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="article_title",
-                type=SearchFieldDataType.String,
-                searchable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="section_title",
-                type=SearchFieldDataType.String,
-                searchable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="related_sections",
-                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
-                filterable=True,
-                facetable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="context_tags",
-                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
-                filterable=True,
-                facetable=True,
-                retrievable=True
-            ),
-            SearchableField(
-                name="gpt_analysis",
-                type=SearchFieldDataType.String,
-                searchable=True,
-                retrievable=True
-            ),
-            SearchField(
-                name="content_vector",
-                type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                searchable=True,
-                vector_search_dimensions=1536,
-                vector_search_profile_name="myHnswProfile",
-                retrievable=True,
-                stored=True
-            )
-        ]
-
+        # Vector search configuration
         vector_search = VectorSearch(
             algorithms=[
                 HnswAlgorithmConfiguration(
-                    name="myHnsw",
+                    name="default",  # Changed to match vector_search_configuration
                     parameters=HnswParameters(
                         m=4,
                         ef_construction=400,
@@ -122,12 +50,72 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             ],
             profiles=[
                 VectorSearchProfile(
-                    name="myHnswProfile",
-                    algorithm_configuration_name="myHnsw"
+                    name="default",  # Must match algorithm name
+                    algorithm_configuration_name="default"
                 )
             ]
         )
 
+        # Define all fields for the index
+        fields = [
+            SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+            SearchableField(
+                name="content",
+                type=SearchFieldDataType.String,
+                analyzer_name="standard.lucene"
+            ),
+            SimpleField(
+                name="page_number",
+                type=SearchFieldDataType.Int32,
+                filterable=True
+            ),
+            SearchableField(
+                name="article_number",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True
+            ),
+            SearchableField(
+                name="section_number",
+                type=SearchFieldDataType.String,
+                filterable=True,
+                facetable=True
+            ),
+            SearchableField(
+                name="article_title",
+                type=SearchFieldDataType.String
+            ),
+            SearchableField(
+                name="section_title",
+                type=SearchFieldDataType.String
+            ),
+            SearchableField(
+                name="related_sections",
+                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
+                filterable=True,
+                facetable=True
+            ),
+            SearchableField(
+                name="context_tags",
+                type=SearchFieldDataType.Collection(SearchFieldDataType.String),
+                filterable=True,
+                facetable=True
+            ),
+            SearchableField(
+                name="gpt_analysis",
+                type=SearchFieldDataType.String
+            ),
+            # Vector field configuration updated with correct properties
+            SearchField(
+                name="content_vector",
+                type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
+                searchable=True,
+                dimensions=1536,  # OpenAI embedding dimension
+                vector_search_configuration="default"
+            )
+        ]
+
+        # Semantic configuration for hybrid search
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
             prioritized_fields=SemanticPrioritizedFields(
@@ -137,6 +125,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         )
         semantic_search = SemanticSearch(configurations=[semantic_config])
 
+        # Create the index with all configurations
         index = SearchIndex(
             name=index_name,
             fields=fields,

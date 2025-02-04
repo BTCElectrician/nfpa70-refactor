@@ -1,11 +1,11 @@
+import numpy as np
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from openai import OpenAI
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from loguru import logger
 from tqdm import tqdm
 import json
-import numpy as np
 
 class DataIndexer:
     """Handles indexing of processed electrical code content into Azure Search."""
@@ -21,26 +21,39 @@ class DataIndexer:
         self.logger = logger
 
     def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
-        """Generate embeddings for text using OpenAI's API."""
+        """Generate embeddings for text using OpenAI's API with enhanced error handling."""
         try:
+            self.logger.debug(f"[generate_embeddings] Generating embedding for text (length: {len(text)})")
             response = self.openai_client.embeddings.create(
                 input=[text],
                 model=model
             )
-            return response.data[0].embedding
+            embedding = response.data[0].embedding
+            
+            # Verify embedding dimension
+            if len(embedding) != 1536:
+                raise ValueError(f"Unexpected embedding dimension: {len(embedding)}")
+            
+            # Convert numpy values to Python float
+            embedding = [float(x) for x in embedding]
+            
+            self.logger.debug(f"[generate_embeddings] Successfully generated embedding with dimension {len(embedding)}")
+            return embedding
+            
         except Exception as e:
             self.logger.error(f"Error generating embeddings: {str(e)}")
             raise
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
-        """Prepare a document for indexing with proper JSON handling."""
+        """Prepare a document for indexing with proper JSON handling and vector generation."""
         try:
-            self.logger.debug(f"[prepare_document] Input chunk structure: {json.dumps(chunk, indent=2)}")
+            self.logger.debug(f"[prepare_document] Processing chunk {chunk_id}")
             
             # Generate embedding for the content
             content_vector = self.generate_embeddings(chunk["content"])
+            self.logger.debug(f"[prepare_document] Generated vector with shape: {len(content_vector)}")
             
-            # Extract metadata fields
+            # Extract metadata fields with proper null handling
             metadata = chunk.get("metadata", {})
             self.logger.debug(f"[prepare_document] Extracted metadata: {metadata}")
             
@@ -48,15 +61,8 @@ class DataIndexer:
             gpt_analysis = chunk.get("gpt_analysis", {})
             if isinstance(gpt_analysis, (dict, list)):
                 gpt_analysis = json.dumps(gpt_analysis)
-                
-            self.logger.debug(f"[prepare_document] Stringified gpt_analysis type: {type(gpt_analysis)}")
             
-            # Convert numpy array to list and ensure float values
-            if isinstance(content_vector, (np.ndarray, np.generic)):
-                content_vector = content_vector.tolist()
-            content_vector = [float(x) for x in content_vector]
-            
-            # Create document with proper field types
+            # Create document with all required fields
             document = {
                 "id": f"doc_{chunk_id}",
                 "content": chunk["content"],
@@ -65,45 +71,72 @@ class DataIndexer:
                 "section_number": str(metadata.get("section") or ""),
                 "article_title": chunk.get("article_title") or "",
                 "section_title": chunk.get("section_title") or "",
-                "content_vector": content_vector,
+                "content_vector": content_vector,  # Send vector directly as array
                 "context_tags": list(chunk.get("context_tags") or []),
                 "related_sections": list(chunk.get("related_sections") or []),
                 "gpt_analysis": gpt_analysis
             }
             
-            # Debug log the final structure
-            self.logger.debug(f"[prepare_document] Final document structure prepared")
+            # Log the document structure before sending
+            self.logger.debug(f"[prepare_document] Final document structure: {json.dumps(document, default=str, indent=2)}")
+            
+            # Validate document structure
+            self._validate_document(document)
+            self.logger.debug(f"[prepare_document] Document {chunk_id} prepared successfully")
             
             return document
             
         except Exception as e:
-            self.logger.error(f"Error preparing document: {str(e)}")
+            self.logger.error(f"Error preparing document {chunk_id}: {str(e)}")
             raise
 
-    def index_documents(self, chunks: List[Dict[str, Any]]) -> None:
-        """Index all documents with progress tracking and error handling."""
+    def _validate_document(self, document: Dict[str, Any]) -> None:
+        """Validate document structure before indexing."""
+        required_fields = [
+            "id", "content", "page_number", "content_vector"
+        ]
+        for field in required_fields:
+            if field not in document:
+                raise ValueError(f"Missing required field: {field}")
+        
+        # Validate vector field specifically
+        if not isinstance(document["content_vector"], list):
+            raise ValueError("content_vector must be a list")
+        if len(document["content_vector"]) != 1536:
+            raise ValueError(f"content_vector must have 1536 dimensions, got {len(document['content_vector'])}")
+        # Ensure all vector values are Python float
+        if not all(isinstance(x, float) for x in document["content_vector"]):
+            raise ValueError("All vector values must be float type")
+
+    def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 50) -> None:
+        """Index all documents with progress tracking and enhanced error handling."""
         try:
-            self.logger.debug(f"[index_documents] Starting indexing of {len(chunks)} chunks")
-            documents = []
             total_chunks = len(chunks)
+            self.logger.info(f"Starting indexing of {total_chunks} chunks")
+            documents = []
             
             # Process chunks with a progress bar
             for i in tqdm(range(total_chunks), desc="Processing chunks"):
-                self.logger.debug(f"[index_documents] Processing chunk {i}")
-                doc = self.prepare_document(chunks[i], i)
-                documents.append(doc)
+                try:
+                    self.logger.debug(f"Processing chunk {i}")
+                    doc = self.prepare_document(chunks[i], i)
+                    documents.append(doc)
+                    
+                    # Upload in batches
+                    if len(documents) >= batch_size or i == total_chunks - 1:
+                        self.logger.debug(f"Uploading batch of {len(documents)} documents")
+                        try:
+                            results = self.search_client.upload_documents(documents=documents)
+                            self.logger.info(f"Successfully indexed batch of {len(results)} documents")
+                            documents = []
+                        except Exception as e:
+                            self.logger.error(f"Error uploading batch: {str(e)}")
+                            raise
                 
-                # Upload in batches of 50 to avoid timeouts
-                if len(documents) >= 50 or i == total_chunks - 1:
-                    try:
-                        self.logger.debug(f"[index_documents] Uploading batch of {len(documents)} documents")
-                        results = self.search_client.upload_documents(documents=documents)
-                        self.logger.info(f"Indexed batch of {len(results)} documents")
-                        documents = []
-                    except Exception as e:
-                        self.logger.error(f"Error uploading batch: {str(e)}")
-                        raise
-            
+                except Exception as e:
+                    self.logger.error(f"Error processing chunk {i}: {str(e)}")
+                    raise
+                    
         except Exception as e:
             self.logger.error(f"Error in indexing process: {str(e)}")
             raise
