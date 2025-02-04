@@ -24,4 +24,8 @@ obj/
 *.log
 
 # Test PDFs
-*.pdf 
+*.pdf
+
+# Markdown files to ignore
+snapshot-nfpa70refactor.md
+upgrade.md 
