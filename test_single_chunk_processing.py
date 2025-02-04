@@ -17,13 +17,11 @@ from azure_search.data_indexer import DataIndexer
 def test_single_chunk_processing():
     """
     Tests the pipeline on a single chunk of text (first page).
-    1) Extract from PDF
-    2) Chunk
-    3) Create/Update the index schema using the production create_search_index
-    4) Index one chunk
-    5) (Optionally) do a simple search to confirm success
     """
     try:
+        # Configure debug logging
+        logger.add("debug.log", level="DEBUG")
+        
         # 1. Load environment variables
         load_dotenv()
         pdf_path = os.getenv('PDF_PATH')
@@ -41,7 +39,6 @@ def test_single_chunk_processing():
         extractor = PDFExtractor()
         pages_text = extractor.extract_text_from_pdf(Path(pdf_path), max_pages=3)
 
-        # Just log a small snippet
         if pages_text:
             first_page_num = list(pages_text.keys())[0]
             logger.info(f"First page text preview:\n{pages_text[first_page_num][:500]}...")
@@ -54,12 +51,12 @@ def test_single_chunk_processing():
         chunks = chunker.chunk_nfpa70_content(pages_text)
         logger.info(f"Number of chunks created: {len(chunks)}")
 
-        # 4. Create or update the index with the production fields
+        # 4. Create or update the index
         logger.info(f"Creating/Updating the test index: {test_index_name} ...")
         create_search_index(search_endpoint, search_key, test_index_name)
         logger.info("Index creation/update complete.")
 
-        # 5. Initialize the DataIndexer for indexing
+        # 5. Initialize the DataIndexer
         indexer = DataIndexer(
             service_endpoint=search_endpoint,
             admin_key=search_key,
@@ -70,7 +67,9 @@ def test_single_chunk_processing():
         # 6. Index only the first chunk
         if chunks:
             first_chunk = chunks[0]
-            # Convert it to the dictionary format matching main.py blob storage format
+            logger.debug(f"[test] First chunk raw structure: {first_chunk.__dict__}")
+            
+            # Convert it to the dictionary format matching blob storage format
             chunk_dict = {
                 "content": first_chunk.content,
                 "metadata": {
@@ -78,22 +77,23 @@ def test_single_chunk_processing():
                     "section": first_chunk.section_number,
                     "page": first_chunk.page_number
                 },
-                "context_tags": first_chunk.context_tags or [],
-                "related_sections": first_chunk.related_sections or [],
+                "context_tags": list(first_chunk.context_tags or []),
+                "related_sections": list(first_chunk.related_sections or []),
                 "article_title": first_chunk.article_title or "",
                 "section_title": first_chunk.section_title or "",
-                "gpt_analysis": first_chunk.gpt_analysis or {}
+                "gpt_analysis": json.dumps(first_chunk.gpt_analysis or {})  # Pre-stringify gpt_analysis
             }
             
             # Log the chunk structure for debugging
             logger.info(f"Chunk dictionary being sent to indexer: {json.dumps(chunk_dict, indent=2)}")
+            logger.debug(f"[test] gpt_analysis type: {type(chunk_dict['gpt_analysis'])}")
             
             logger.info("Indexing the first chunk only...")
             indexer.index_documents([chunk_dict])
         else:
             logger.warning("No chunks to index.")
 
-        # 7. Quick search test to confirm the doc is in the index
+        # 7. Quick search test
         search_client = SearchClient(
             endpoint=search_endpoint,
             index_name=test_index_name,

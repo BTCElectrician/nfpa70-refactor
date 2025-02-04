@@ -5,6 +5,7 @@ from typing import List, Dict, Any
 from loguru import logger
 from tqdm import tqdm
 import json
+import numpy as np
 
 class DataIndexer:
     """Handles indexing of processed electrical code content into Azure Search."""
@@ -20,16 +21,7 @@ class DataIndexer:
         self.logger = logger
 
     def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
-        """
-        Generate embeddings for text using OpenAI's API.
-        
-        Args:
-            text: Text to generate embeddings for
-            model: OpenAI embedding model to use
-            
-        Returns:
-            List of embedding values
-        """
+        """Generate embeddings for text using OpenAI's API."""
         try:
             response = self.openai_client.embeddings.create(
                 input=[text],
@@ -41,58 +33,70 @@ class DataIndexer:
             raise
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
-        """
-        Prepare a document for indexing with proper structure for Azure Search.
-        
-        Args:
-            chunk: The chunk dictionary containing content and metadata
-            chunk_id: Unique identifier for the chunk
+        """Prepare a document for indexing with proper JSON handling."""
+        try:
+            self.logger.debug(f"[prepare_document] Input chunk structure: {json.dumps(chunk, indent=2)}")
             
-        Returns:
-            A dictionary that matches the Azure Search index schema
-        """
-        # Generate embedding for the content
-        content_vector = self.generate_embeddings(chunk["content"])
-
-        # Extract metadata fields to top level
-        metadata = chunk.get("metadata", {})
-        
-        # Create document with proper structure for Azure Search
-        document = {
-            "id": f"doc_{chunk_id}",
-            "content": chunk["content"],
-            "page_number": metadata.get("page", 0),
-            "article_number": metadata.get("article", ""),
-            "section_number": metadata.get("section", ""),
-            "article_title": chunk.get("article_title", ""),
-            "section_title": chunk.get("section_title", ""),
-            "content_vector": content_vector,
-            "context_tags": chunk.get("context_tags", []) or [],
-            "related_sections": chunk.get("related_sections", []) or [],
-            "gpt_analysis": json.dumps(chunk.get("gpt_analysis", {}))
-        }
-        
-        return document
+            # Generate embedding for the content
+            content_vector = self.generate_embeddings(chunk["content"])
+            
+            # Extract metadata fields
+            metadata = chunk.get("metadata", {})
+            self.logger.debug(f"[prepare_document] Extracted metadata: {metadata}")
+            
+            # Convert gpt_analysis to string if it's a dict
+            gpt_analysis = chunk.get("gpt_analysis", {})
+            if isinstance(gpt_analysis, (dict, list)):
+                gpt_analysis = json.dumps(gpt_analysis)
+                
+            self.logger.debug(f"[prepare_document] Stringified gpt_analysis type: {type(gpt_analysis)}")
+            
+            # Convert numpy array to list and ensure float values
+            if isinstance(content_vector, (np.ndarray, np.generic)):
+                content_vector = content_vector.tolist()
+            content_vector = [float(x) for x in content_vector]
+            
+            # Create document with proper field types
+            document = {
+                "id": f"doc_{chunk_id}",
+                "content": chunk["content"],
+                "page_number": metadata.get("page", 0),
+                "article_number": str(metadata.get("article") or ""),
+                "section_number": str(metadata.get("section") or ""),
+                "article_title": chunk.get("article_title") or "",
+                "section_title": chunk.get("section_title") or "",
+                "content_vector": content_vector,
+                "context_tags": list(chunk.get("context_tags") or []),
+                "related_sections": list(chunk.get("related_sections") or []),
+                "gpt_analysis": gpt_analysis
+            }
+            
+            # Debug log the final structure
+            self.logger.debug(f"[prepare_document] Final document structure prepared")
+            
+            return document
+            
+        except Exception as e:
+            self.logger.error(f"Error preparing document: {str(e)}")
+            raise
 
     def index_documents(self, chunks: List[Dict[str, Any]]) -> None:
-        """
-        Index all documents with progress tracking and error handling.
-        
-        Args:
-            chunks: List of processed text chunk dictionaries
-        """
+        """Index all documents with progress tracking and error handling."""
         try:
+            self.logger.debug(f"[index_documents] Starting indexing of {len(chunks)} chunks")
             documents = []
             total_chunks = len(chunks)
             
             # Process chunks with a progress bar
             for i in tqdm(range(total_chunks), desc="Processing chunks"):
+                self.logger.debug(f"[index_documents] Processing chunk {i}")
                 doc = self.prepare_document(chunks[i], i)
                 documents.append(doc)
                 
-                # Upload in batches of 50 to avoid timeouts or large payload issues
+                # Upload in batches of 50 to avoid timeouts
                 if len(documents) >= 50 or i == total_chunks - 1:
                     try:
+                        self.logger.debug(f"[index_documents] Uploading batch of {len(documents)} documents")
                         results = self.search_client.upload_documents(documents=documents)
                         self.logger.info(f"Indexed batch of {len(results)} documents")
                         documents = []
