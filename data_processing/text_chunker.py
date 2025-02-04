@@ -1,13 +1,55 @@
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 import logging
 import json
 from openai import OpenAI
+from loguru import logger
+
+@dataclass
+class CodePosition:
+    """Tracks the current position within the electrical code document.
+    
+    This class maintains hierarchical context as we process the document,
+    ensuring we understand the relationship between chunks even when they
+    don't contain explicit section numbers.
+    """
+    article_number: Optional[str] = None
+    article_title: Optional[str] = None
+    section_number: Optional[str] = None
+    section_title: Optional[str] = None
+    subsection_letter: Optional[str] = None
+    hierarchy: List[str] = field(default_factory=list)
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
+
+    def update_from_text(self, text: str) -> None:
+        """Updates position based on text markers."""
+        # Check for article headers
+        article_match = re.search(r'ARTICLE\s+(\d+)\s*[-—]\s*(.+?)(?=\n|$)', text)
+        if article_match:
+            self.article_number = article_match.group(1)
+            self.article_title = article_match.group(2).strip()
+            self.hierarchy = [f"Article {self.article_number}"]
+
+        # Check for section numbers
+        section_match = re.search(r'(\d+\.\d+)\s+(.+?)(?=\n|$)', text)
+        if section_match:
+            self.section_number = section_match.group(1)
+            self.section_title = section_match.group(2).strip()
+            if self.hierarchy:
+                self.hierarchy = self.hierarchy[:1] + [f"Section {self.section_number}"]
+
+        # Check for subsections
+        subsection_match = re.search(r'\(([A-Z])\)\s+', text)
+        if subsection_match:
+            self.subsection_letter = subsection_match.group(1)
+            if len(self.hierarchy) >= 2:
+                self.hierarchy = self.hierarchy[:2] + [f"Subsection ({self.subsection_letter})"]
 
 @dataclass
 class CodeChunk:
-    """Represents a chunk of electrical code with context."""
+    """Represents a chunk of electrical code with enhanced context."""
     content: str
     page_number: int
     article_number: Optional[str] = None
@@ -17,141 +59,52 @@ class CodeChunk:
     context_tags: List[str] = field(default_factory=list)
     related_sections: List[str] = field(default_factory=list)
     gpt_analysis: Dict = field(default_factory=dict)
+    hierarchy: List[str] = field(default_factory=list)
+    context_before: Optional[str] = None
+    context_after: Optional[str] = None
 
 class ElectricalCodeChunker:
     """Enhanced chunking for electrical code text with comprehensive NEC terminology."""
     
     def __init__(self, openai_api_key: Optional[str] = None):
-        self.logger = logging.getLogger(__name__)
+        """Initialize the chunker with optional OpenAI integration."""
+        self.logger = logger
         self.client = OpenAI(api_key=openai_api_key) if openai_api_key else None
+        self.position = CodePosition()
         
         # Comprehensive NEC terminology mapping
         self.context_mapping = {
-            # Power Distribution
             'service_equipment': [
                 'service equipment', 'service entrance', 'service drop', 'service lateral',
                 'meter', 'metering', 'service disconnect', 'main disconnect', 'service panel',
                 'switchboard', 'switchgear', 'panelboard'
             ],
-            
-            # Conductors and Raceways
             'conductors': [
                 'conductor', 'wire', 'cable', 'AWG', 'kcmil', 'THHN', 'THWN', 'XHHW',
-                'multiconductor', 'stranded', 'solid', 'copper', 'aluminum', 'CU', 'AL',
-                'current-carrying', 'neutral', 'ungrounded', 'phase'
+                'multiconductor', 'stranded', 'solid', 'copper', 'aluminum', 'CU', 'AL'
             ],
-            
             'raceway': [
                 'EMT', 'IMC', 'RMC', 'PVC', 'RTRC', 'LFMC', 'LFNC', 'FMC',
                 'electrical metallic tubing', 'intermediate metal conduit',
-                'rigid metal conduit', 'liquidtight flexible metal conduit',
-                'schedule 40', 'schedule 80', 'nipple', 'chase', 'sleeve'
+                'rigid metal conduit', 'liquidtight flexible metal conduit'
             ],
-            
-            # Grounding and Bonding
             'grounding': [
                 'ground', 'grounded', 'grounding', 'earthing', 'bonding', 'GEC',
-                'equipment grounding conductor', 'ground fault', 'GFCI', 'GFPE',
-                'grounding electrode', 'ground rod', 'ufer', 'made electrode',
-                'ground ring', 'ground plate', 'ground bus', 'isolated ground'
+                'equipment grounding conductor', 'ground fault', 'GFCI', 'GFPE'
             ],
-            
-            # Overcurrent Protection
             'overcurrent': [
                 'breaker', 'circuit breaker', 'fuse', 'overcurrent', 'overload',
-                'short circuit', 'AFCI', 'arc fault', 'GFCI', 'ground fault',
-                'fusible', 'nonfusible', 'instantaneous trip', 'adjustable trip'
+                'short circuit', 'AFCI', 'arc fault', 'GFCI', 'ground fault'
             ],
-            
-            # Special Occupancies
             'special_locations': [
                 'hazardous', 'classified', 'class I', 'class II', 'class III',
-                'division 1', 'division 2', 'zone 0', 'zone 1', 'zone 2',
-                'wet location', 'damp location', 'corrosive', 'hospital',
-                'healthcare', 'assembly', 'theater', 'motor fuel', 'spray booth'
+                'division 1', 'division 2', 'zone 0', 'zone 1', 'zone 2'
             ],
-            
-            # Motors and Controls
-            'motors': [
-                'motor', 'controller', 'starter', 'VFD', 'variable frequency',
-                'horsepower', 'hp', 'full-load', 'locked rotor', 'duty cycle',
-                'continuous duty', 'overload', 'disconnecting means'
-            ],
-            
-            # Equipment
-            'transformers': [
-                'transformer', 'xfmr', 'xfmer', 'primary', 'secondary',
-                'delta', 'wye', 'impedance', 'kVA', 'step-up', 'step-down',
-                'dry-type', 'liquid-filled', 'vault'
-            ],
-            
-            'hvac': [
-                'air conditioning', 'HVAC', 'heat pump', 'condenser',
-                'evaporator', 'cooling', 'heating', 'disconnecting means',
-                'minimum circuit ampacity', 'maximum overcurrent'
-            ],
-            
-            # Installation Requirements
             'installation': [
                 'support', 'securing', 'fastening', 'mounting', 'attachment',
-                'spacing', 'interval', 'strap', 'hanger', 'bracket', 'anchor',
-                'embedded', 'concealed', 'exposed'
-            ],
-            
-            'clearance': [
-                'clearance', 'spacing', 'distance', 'separation', 'depth',
-                'working space', 'dedicated space', 'headroom', 'minimum depth',
-                'burial depth', 'cover'
-            ],
-            
-            # Emergency Systems
-            'emergency': [
-                'emergency', 'legally required standby', 'optional standby',
-                'backup', 'generator', 'transfer switch', 'automatic transfer',
-                'manual transfer', 'essential electrical system'
-            ],
-            
-            # Branch Circuits and Feeders
-            'branch_circuits': [
-                'branch circuit', 'feeder', 'multiwire', 'general purpose',
-                'dedicated circuit', 'small appliance', 'laundry', 'SABC',
-                'receptacle', 'outlet', 'lighting', '15-amp', '20-amp', '30-amp'
-            ],
-            
-            # Special Equipment
-            'welding': [
-                'welder', 'welding outlet', 'welding receptacle', 'electrode',
-                'duty cycle', 'demand factor'
-            ],
-            
-            'ev_charging': [
-                'electric vehicle', 'EV', 'charging equipment', 'EVSE',
-                'fast charging', 'level 2', 'level 3', 'charging station'
-            ],
-            
-            # Fire Alarm Systems
-            'fire_alarm': [
-                'fire alarm', 'smoke detector', 'heat detector', 'initiating device',
-                'notification appliance', 'fire alarm control unit', 'FACU', 'FACP'
-            ],
-            
-            # Solar PV Systems
-            'solar': [
-                'photovoltaic', 'PV', 'solar', 'inverter', 'rapid shutdown',
-                'module', 'array', 'combiner', 'micro-inverter', 'optimizer'
-            ],
-            
-            # Communications
-            'communications': [
-                'network', 'data', 'telephone', 'coaxial', 'fiber optic',
-                'category', 'CAT', 'plenum', 'riser', 'cable tray', 'J-hooks'
+                'spacing', 'interval', 'strap', 'hanger', 'bracket', 'anchor'
             ]
         }
-        
-        # Regex patterns
-        self.article_pattern = re.compile(r'ARTICLE\s+(\d+)\s*[-—]\s*(.+?)(?=\n|$)')
-        self.section_pattern = re.compile(r'(\d+\.\d+(?:\([A-Z]\))?)\s+(.+?)(?=\n|$)')
-        self.reference_pattern = re.compile(r'(?:see\s+(?:Section\s+)?|with\s+)(\d+\.\d+(?:\([A-Z]\))?)')
 
     def _identify_context(self, text: str) -> List[str]:
         """Identify technical context tags for the text."""
@@ -164,55 +117,33 @@ class ElectricalCodeChunker:
 
     def _find_related_sections(self, text: str) -> List[str]:
         """Find referenced sections in the text."""
-        return list(set(self.reference_pattern.findall(text)))
+        reference_pattern = re.compile(r'(?:see\s+(?:Section\s+)?|with\s+)(\d+\.\d+(?:\([A-Z]\))?)')
+        return list(set(reference_pattern.findall(text)))
 
     def analyze_chunk_with_gpt(self, chunk: str) -> Dict:
-        """Use GPT to analyze or clean up chunk content."""
+        """Use GPT to analyze chunk content."""
         if not self.client:
             return {}
-        
-        prompt = f"""Analyze this NFPA 70 electrical code section carefully. 
-        
-        VALIDATION TASKS:
-        1. Verify the structure:
-           - Confirm article number (XXX format)
-           - Confirm section number (XXX.XX format)
-           - List any subsections ((A), (B), (C), etc.)
-           - Check if chunk starts/ends at logical points
-        
-        2. Extract and organize:
-           - Key technical requirements
-           - Equipment specifications
-           - Cross-references to other sections
-           - Safety-critical elements
-           - Any defined terms or definitions
-        
-        3. Flag potential issues:
-           - Incomplete sections
-           - Split paragraphs
-           - Missing context
-           - Broken references
+            
+        # Define prompt parts separately to avoid f-string formatting issues
+        prompt_prefix = "Analyze this section of the National Electrical Code carefully.\n\n"
+        prompt_content = f"Code text:\n{chunk}\n\n"
+        prompt_instructions = """Analyze and extract:
+1. Technical Requirements
+2. Safety Implications
+3. Related References
+4. Key Equipment
 
-        Code section:
-        {chunk}
+Return the analysis in this exact JSON structure:
+{
+    "requirements": [],
+    "safety_elements": [],
+    "related_sections": [],
+    "equipment": []
+}"""
 
-        Provide response in JSON format with these exact keys:
-        {{
-            "structure_check": {{
-                "article_number": "",
-                "section_number": "",
-                "subsections": [],
-                "is_complete": true,
-                "issues": []
-            }},
-            "technical_analysis": {{
-                "requirements": [],
-                "specifications": [],
-                "cross_references": [],
-                "safety_elements": [],
-                "definitions": []
-            }}
-        }}"""
+        # Combine parts into final prompt
+        prompt = prompt_prefix + prompt_content + prompt_instructions
 
         try:
             response = self.client.chat.completions.create(
@@ -227,57 +158,54 @@ class ElectricalCodeChunker:
             return {}
 
     def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
-        """
-        Process NFPA 70 content into context-aware chunks.
+        """Process NFPA 70 content into context-aware chunks.
+        
         Args:
-            pages_text: Dict[page_number, text]
+            pages_text: Dict mapping page numbers to text content
+            
         Returns:
-            List of CodeChunk objects
+            List of CodeChunk objects with enhanced context
         """
         chunks = []
-        current_article = None
-        current_article_title = None
+        self.position = CodePosition()  # Reset position tracker
         
-        for page_num, text in pages_text.items():
+        # Skip initial pages that don't contain actual code content
+        start_page = min(26, min(pages_text.keys()))  # Start at page 26 or first available
+        
+        for page_num in sorted(key for key in pages_text.keys() if key >= start_page):
+            text = pages_text[page_num]
             lines = text.split('\n')
             current_chunk = []
-            current_section = None
-            current_section_title = None
             
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
                 
-                # Check for article header
-                article_match = self.article_pattern.search(line)
-                if article_match:
-                    current_article = article_match.group(1)
-                    current_article_title = article_match.group(2).strip()
-                    continue
+                # Update our position in the document
+                self.position.update_from_text(line)
                 
-                # Check for section header
-                section_match = self.section_pattern.match(line)
-                if section_match:
+                # Check for new article or section
+                if re.search(r'ARTICLE\s+\d+|^\d+\.\d+\s+[A-Z]', line):
                     # Save previous chunk if it exists
                     if current_chunk:
                         chunk_text = ' '.join(current_chunk)
                         gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
+                        
                         chunks.append(CodeChunk(
                             content=chunk_text,
                             page_number=page_num,
-                            article_number=current_article,
-                            article_title=current_article_title,
-                            section_number=current_section,
-                            section_title=current_section_title,
+                            article_number=self.position.article_number,
+                            article_title=self.position.article_title,
+                            section_number=self.position.section_number,
+                            section_title=self.position.section_title,
                             context_tags=self._identify_context(chunk_text),
                             related_sections=self._find_related_sections(chunk_text),
-                            gpt_analysis=gpt_analysis
+                            gpt_analysis=gpt_analysis,
+                            hierarchy=self.position.hierarchy.copy(),
+                            context_before=self.position.context_before,
+                            context_after=self.position.context_after
                         ))
-                    
-                    # Start a new chunk
-                    current_section = section_match.group(1)
-                    current_section_title = section_match.group(2).strip()
                     current_chunk = [line]
                 else:
                     current_chunk.append(line)
@@ -286,25 +214,37 @@ class ElectricalCodeChunker:
             if current_chunk:
                 chunk_text = ' '.join(current_chunk)
                 gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
+                
                 chunks.append(CodeChunk(
                     content=chunk_text,
                     page_number=page_num,
-                    article_number=current_article,
-                    article_title=current_article_title,
-                    section_number=current_section,
-                    section_title=current_section_title,
+                    article_number=self.position.article_number,
+                    article_title=self.position.article_title,
+                    section_number=self.position.section_number,
+                    section_title=self.position.section_title,
                     context_tags=self._identify_context(chunk_text),
                     related_sections=self._find_related_sections(chunk_text),
-                    gpt_analysis=gpt_analysis
+                    gpt_analysis=gpt_analysis,
+                    hierarchy=self.position.hierarchy.copy(),
+                    context_before=self.position.context_before,
+                    context_after=self.position.context_after
                 ))
+        
+        # Add context links between chunks
+        for i in range(len(chunks)):
+            if i > 0:
+                chunks[i].context_before = chunks[i-1].content[:200]  # First 200 chars of previous chunk
+            if i < len(chunks) - 1:
+                chunks[i].context_after = chunks[i+1].content[:200]  # First 200 chars of next chunk
         
         return chunks
 
-# Compatibility function for older code calling
+
+# Compatibility function for older code
 def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
     """Wrapper for compatibility with existing code."""
     chunker = ElectricalCodeChunker(openai_api_key=openai_api_key)
-    pages_text = {1: text}
+    pages_text = {1: text}  # Wrap in dict for compatibility
     chunks = chunker.chunk_nfpa70_content(pages_text)
     
     return [
