@@ -31,7 +31,6 @@ def test_single_chunk_processing():
         search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
         openai_key = os.getenv('OPENAI_API_KEY')
         
-        # You can either override with a test index name or use your normal production index
         test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index-test')
 
         if not all([pdf_path, search_endpoint, search_key, openai_key]):
@@ -60,7 +59,7 @@ def test_single_chunk_processing():
         create_search_index(search_endpoint, search_key, test_index_name)
         logger.info("Index creation/update complete.")
 
-        # 5. Initialize the DataIndexer (production style) for indexing
+        # 5. Initialize the DataIndexer for indexing
         indexer = DataIndexer(
             service_endpoint=search_endpoint,
             admin_key=search_key,
@@ -71,7 +70,7 @@ def test_single_chunk_processing():
         # 6. Index only the first chunk
         if chunks:
             first_chunk = chunks[0]
-            # Convert it to the dictionary format the indexer expects:
+            # Convert it to the dictionary format matching main.py blob storage format
             chunk_dict = {
                 "content": first_chunk.content,
                 "metadata": {
@@ -79,19 +78,22 @@ def test_single_chunk_processing():
                     "section": first_chunk.section_number,
                     "page": first_chunk.page_number
                 },
-                "context_tags": first_chunk.context_tags,
-                "related_sections": first_chunk.related_sections,
+                "context_tags": first_chunk.context_tags or [],
+                "related_sections": first_chunk.related_sections or [],
                 "article_title": first_chunk.article_title or "",
                 "section_title": first_chunk.section_title or "",
                 "gpt_analysis": first_chunk.gpt_analysis or {}
             }
-            # Index it
+            
+            # Log the chunk structure for debugging
+            logger.info(f"Chunk dictionary being sent to indexer: {json.dumps(chunk_dict, indent=2)}")
+            
             logger.info("Indexing the first chunk only...")
             indexer.index_documents([chunk_dict])
         else:
             logger.warning("No chunks to index.")
 
-        # 7. (Optional) Quick search test to confirm the doc is in the index
+        # 7. Quick search test to confirm the doc is in the index
         search_client = SearchClient(
             endpoint=search_endpoint,
             index_name=test_index_name,

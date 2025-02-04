@@ -19,7 +19,7 @@ class DataIndexer:
         self.openai_client = OpenAI(api_key=openai_api_key)
         self.logger = logger
 
-    def generate_embeddings(self, text: str, model: str = "text-embedding-ada-002") -> List[float]:
+    def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
         """
         Generate embeddings for text using OpenAI's API.
         
@@ -42,37 +42,34 @@ class DataIndexer:
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
         """
-        Prepare a document for indexing with all necessary fields, including new ones.
+        Prepare a document for indexing with proper structure for Azure Search.
         
         Args:
-            chunk: The chunk dictionary from blob (containing content, metadata, article_title, etc.)
-            chunk_id: Unique identifier for the chunk in this indexing batch
+            chunk: The chunk dictionary containing content and metadata
+            chunk_id: Unique identifier for the chunk
             
         Returns:
-            A dictionary that matches the schema fields in Azure Search
+            A dictionary that matches the Azure Search index schema
         """
-        content = chunk["content"]
-        metadata = chunk.get("metadata", {})
-
         # Generate embedding for the content
-        content_vector = self.generate_embeddings(content)
+        content_vector = self.generate_embeddings(chunk["content"])
 
+        # Extract metadata fields to top level
+        metadata = chunk.get("metadata", {})
+        
+        # Create document with proper structure for Azure Search
         document = {
             "id": f"doc_{chunk_id}",
-            "content": content,
-            "page_number": int(metadata.get("page", 0)),
-            "article_number": str(metadata.get("article", "")),
-            "section_number": str(metadata.get("section", "")),
-            
-            # The new fields:
+            "content": chunk["content"],
+            "page_number": metadata.get("page", 0),
+            "article_number": metadata.get("article", ""),
+            "section_number": metadata.get("section", ""),
             "article_title": chunk.get("article_title", ""),
             "section_title": chunk.get("section_title", ""),
-            # GPT analysis stored as a JSON string, or you can store it as text
-            "gpt_analysis": json.dumps(chunk.get("gpt_analysis", {})),
-
             "content_vector": content_vector,
-            "context_tags": chunk.get("context_tags", []),
-            "related_sections": chunk.get("related_sections", [])
+            "context_tags": chunk.get("context_tags", []) or [],
+            "related_sections": chunk.get("related_sections", []) or [],
+            "gpt_analysis": json.dumps(chunk.get("gpt_analysis", {}))
         }
         
         return document
@@ -106,12 +103,3 @@ class DataIndexer:
         except Exception as e:
             self.logger.error(f"Error in indexing process: {str(e)}")
             raise
-
-# Optional compatibility function if older code calls it
-def index_documents(service_endpoint: str, admin_key: str, index_name: str,
-                    chunks: List[Dict[str, Any]], openai_api_key: str) -> None:
-    """
-    Wrapper function for compatibility with older code patterns.
-    """
-    indexer = DataIndexer(service_endpoint, admin_key, index_name, openai_api_key)
-    indexer.index_documents(chunks)

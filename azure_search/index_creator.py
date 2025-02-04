@@ -8,132 +8,145 @@ from azure.search.documents.indexes.models import (
     SearchField,
     SearchFieldDataType,
     VectorSearch,
+    HnswParameters,
     HnswAlgorithmConfiguration,
-    VectorSearchAlgorithmMetric,
+    VectorSearchProfile,
     SemanticConfiguration,
     SemanticField,
-    SemanticSettings,
-    PrioritizedFields
+    SemanticSearch,
+    SemanticPrioritizedFields
 )
 from loguru import logger
 
 def create_search_index(service_endpoint: str, admin_key: str, index_name: str) -> None:
     """
     Create or update an Azure Cognitive Search index with vector search enabled.
-    Includes fields like article_title, section_title, and gpt_analysis if desired.
+    Includes fields like article_title, section_title, and gpt_analysis.
+    Updated for azure-search-documents==11.5.2 with correct vector profile configuration.
     """
     try:
         credential = AzureKeyCredential(admin_key)
         index_client = SearchIndexClient(endpoint=service_endpoint, credential=credential)
 
+        # Delete existing index if it exists
+        try:
+            index_client.delete_index(index_name)
+            logger.info(f"Deleted existing index '{index_name}'")
+        except Exception as e:
+            logger.info(f"Index '{index_name}' does not exist yet")
+
         fields = [
-            SimpleField(name="id", type=SearchFieldDataType.String, key=True),
+            SimpleField(name="id", type=SearchFieldDataType.String, key=True, 
+                       filterable=True, retrievable=True),
             SearchableField(
-                name="content", 
+                name="content",
                 type=SearchFieldDataType.String,
-                analyzer_name="en.microsoft",
                 searchable=True,
-                filterable=False,
-                facetable=False
+                retrievable=True,
+                analyzer_name="standard.lucene"
             ),
             SimpleField(
-                name="page_number", 
+                name="page_number",
                 type=SearchFieldDataType.Int32,
                 filterable=True,
-                sortable=True
+                retrievable=True
             ),
             SearchableField(
                 name="article_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
                 facetable=True,
-                searchable=True
+                retrievable=True
             ),
             SearchableField(
                 name="section_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
                 facetable=True,
-                searchable=True
+                retrievable=True
             ),
             SearchableField(
                 name="article_title",
                 type=SearchFieldDataType.String,
-                filterable=True,
-                facetable=True,
-                searchable=True
+                searchable=True,
+                retrievable=True
             ),
             SearchableField(
                 name="section_title",
                 type=SearchFieldDataType.String,
-                filterable=True,
-                facetable=True,
-                searchable=True
+                searchable=True,
+                retrievable=True
             ),
             SearchableField(
                 name="related_sections",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True,
                 facetable=True,
-                searchable=True
+                retrievable=True
             ),
             SearchableField(
                 name="context_tags",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True,
                 facetable=True,
-                searchable=True
+                retrievable=True
             ),
             SearchableField(
                 name="gpt_analysis",
                 type=SearchFieldDataType.String,
-                filterable=False,
-                facetable=False,
-                searchable=False  # or True if you want to search GPT output
+                searchable=True,
+                retrievable=True
             ),
-            # Vector field for semantic search
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
-                vector_search_dimensions=1536,       # Align w/ your chosen embedding model
-                vector_search_configuration="myHnsw"
-            ),
+                searchable=True,
+                vector_search_dimensions=1536,
+                vector_search_profile_name="myHnswProfile",
+                retrievable=True,
+                stored=True
+            )
         ]
 
-        # Configure vector search
         vector_search = VectorSearch(
             algorithms=[
                 HnswAlgorithmConfiguration(
                     name="myHnsw",
-                    parameters={
-                        "m": 16,
-                        "efConstruction": 200,
-                        "metric": VectorSearchAlgorithmMetric.COSINE
-                    }
+                    parameters=HnswParameters(
+                        m=4,
+                        ef_construction=400,
+                        ef_search=500,
+                        metric="cosine"
+                    )
+                )
+            ],
+            profiles=[
+                VectorSearchProfile(
+                    name="myHnswProfile",
+                    algorithm_configuration_name="myHnsw"
                 )
             ]
         )
 
-        # Optional semantic config
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
-            prioritized_fields=PrioritizedFields(
-                title_field=SemanticField(field_name="section_title"),
-                content_fields=[SemanticField(field_name="content")]
+            prioritized_fields=SemanticPrioritizedFields(
+                content_fields=[SemanticField(field_name="content")],
+                title_field=SemanticField(field_name="section_title")
             )
         )
-        semantic_settings = SemanticSettings(configurations=[semantic_config])
+        semantic_search = SemanticSearch(configurations=[semantic_config])
 
         index = SearchIndex(
             name=index_name,
             fields=fields,
             vector_search=vector_search,
-            semantic_settings=semantic_settings
+            semantic_search=semantic_search
         )
 
-        logger.info(f"Creating or updating search index '{index_name}' ...")
+        logger.info(f"Creating search index '{index_name}' ...")
         index_client.create_or_update_index(index)
-        logger.info(f"Index '{index_name}' created/updated successfully.")
+        logger.info(f"Index '{index_name}' created successfully.")
 
     except Exception as e:
         logger.error(f"Error creating/updating index: {str(e)}")
