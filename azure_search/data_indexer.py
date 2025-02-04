@@ -21,21 +21,19 @@ class DataIndexer:
         self.logger = logger
 
     def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
-        """Generate embeddings for text using OpenAI's API with enhanced error handling."""
+        """Generate embeddings for text using OpenAI's API."""
         try:
             self.logger.debug(f"[generate_embeddings] Generating embedding for text (length: {len(text)})")
             response = self.openai_client.embeddings.create(
                 input=[text],
                 model=model
             )
-            embedding = response.data[0].embedding
+            # Convert embedding to list of floats
+            embedding = [float(x) for x in response.data[0].embedding]
             
             # Verify embedding dimension
             if len(embedding) != 1536:
                 raise ValueError(f"Unexpected embedding dimension: {len(embedding)}")
-            
-            # Convert numpy values to Python float
-            embedding = [float(x) for x in embedding]
             
             self.logger.debug(f"[generate_embeddings] Successfully generated embedding with dimension {len(embedding)}")
             return embedding
@@ -45,7 +43,7 @@ class DataIndexer:
             raise
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
-        """Prepare a document for indexing with proper JSON handling and vector generation."""
+        """Prepare a document for indexing with proper vector handling."""
         try:
             self.logger.debug(f"[prepare_document] Processing chunk {chunk_id}")
             
@@ -53,16 +51,15 @@ class DataIndexer:
             content_vector = self.generate_embeddings(chunk["content"])
             self.logger.debug(f"[prepare_document] Generated vector with shape: {len(content_vector)}")
             
-            # Extract metadata fields with proper null handling
+            # Extract metadata
             metadata = chunk.get("metadata", {})
-            self.logger.debug(f"[prepare_document] Extracted metadata: {metadata}")
             
-            # Convert gpt_analysis to string if it's a dict
-            gpt_analysis = chunk.get("gpt_analysis", {})
+            # Handle GPT analysis
+            gpt_analysis = chunk.get("gpt_analysis", "")
             if isinstance(gpt_analysis, (dict, list)):
                 gpt_analysis = json.dumps(gpt_analysis)
             
-            # Create document with all required fields
+            # Create document with all fields
             document = {
                 "id": f"doc_{chunk_id}",
                 "content": chunk["content"],
@@ -71,16 +68,13 @@ class DataIndexer:
                 "section_number": str(metadata.get("section") or ""),
                 "article_title": chunk.get("article_title") or "",
                 "section_title": chunk.get("section_title") or "",
-                "content_vector": content_vector,  # Send vector directly as array
+                "content_vector": content_vector,  # Send as direct array of floats
                 "context_tags": list(chunk.get("context_tags") or []),
                 "related_sections": list(chunk.get("related_sections") or []),
                 "gpt_analysis": gpt_analysis
             }
             
-            # Log the document structure before sending
-            self.logger.debug(f"[prepare_document] Final document structure: {json.dumps(document, default=str, indent=2)}")
-            
-            # Validate document structure
+            # Validate document
             self._validate_document(document)
             self.logger.debug(f"[prepare_document] Document {chunk_id} prepared successfully")
             
@@ -99,23 +93,22 @@ class DataIndexer:
             if field not in document:
                 raise ValueError(f"Missing required field: {field}")
         
-        # Validate vector field specifically
+        # Validate vector field
         if not isinstance(document["content_vector"], list):
             raise ValueError("content_vector must be a list")
         if len(document["content_vector"]) != 1536:
             raise ValueError(f"content_vector must have 1536 dimensions, got {len(document['content_vector'])}")
-        # Ensure all vector values are Python float
         if not all(isinstance(x, float) for x in document["content_vector"]):
             raise ValueError("All vector values must be float type")
 
     def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 50) -> None:
-        """Index all documents with progress tracking and enhanced error handling."""
+        """Index all documents with progress tracking and error handling."""
         try:
             total_chunks = len(chunks)
             self.logger.info(f"Starting indexing of {total_chunks} chunks")
             documents = []
             
-            # Process chunks with a progress bar
+            # Process chunks with progress bar
             for i in tqdm(range(total_chunks), desc="Processing chunks"):
                 try:
                     self.logger.debug(f"Processing chunk {i}")

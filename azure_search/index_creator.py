@@ -22,7 +22,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
     """
     Create or update an Azure Cognitive Search index with vector search enabled.
     Includes fields like article_title, section_title, and gpt_analysis.
-    Updated for azure-search-documents==11.5.2 with correct vector configuration.
+    Updated for azure-search-documents==11.5.2 with correct vector profile configuration.
     """
     try:
         credential = AzureKeyCredential(admin_key)
@@ -39,7 +39,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         vector_search = VectorSearch(
             algorithms=[
                 HnswAlgorithmConfiguration(
-                    name="default",  # Changed to match vector_search_configuration
+                    name="hnsw-config",  # Algorithm name
                     parameters=HnswParameters(
                         m=4,
                         ef_construction=400,
@@ -50,13 +50,12 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             ],
             profiles=[
                 VectorSearchProfile(
-                    name="default",  # Must match algorithm name
-                    algorithm_configuration_name="default"
+                    name="hnsw-profile",  # Profile name referenced by fields
+                    algorithm_configuration_name="hnsw-config"  # Must match algorithm name
                 )
             ]
         )
 
-        # Define all fields for the index
         fields = [
             SimpleField(name="id", type=SearchFieldDataType.String, key=True),
             SearchableField(
@@ -105,17 +104,17 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 name="gpt_analysis",
                 type=SearchFieldDataType.String
             ),
-            # Vector field configuration updated with correct properties
+            # Vector field with correct v11.5.2 properties
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
                 searchable=True,
-                dimensions=1536,  # OpenAI embedding dimension
-                vector_search_configuration="default"
+                vector_search_dimensions=1536,  # Correct property name for v11.5.2
+                vector_search_profile_name="hnsw-profile"  # Must match profile name
             )
         ]
 
-        # Semantic configuration for hybrid search
+        # Semantic configuration
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
             prioritized_fields=SemanticPrioritizedFields(
@@ -125,7 +124,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         )
         semantic_search = SemanticSearch(configurations=[semantic_config])
 
-        # Create the index with all configurations
+        # Create index
         index = SearchIndex(
             name=index_name,
             fields=fields,
