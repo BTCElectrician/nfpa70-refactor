@@ -171,20 +171,51 @@ class ElectricalCodeChunker:
         if not self.client:
             return {}
         
-        prompt = f"""Analyze this NFPA 70 electrical code section and extract:
-        1. Key technical requirements
-        2. Equipment specifications
-        3. Cross-references to other sections
-        4. Safety-critical elements
+        prompt = f"""Analyze this NFPA 70 electrical code section carefully. 
+        
+        VALIDATION TASKS:
+        1. Verify the structure:
+           - Confirm article number (XXX format)
+           - Confirm section number (XXX.XX format)
+           - List any subsections ((A), (B), (C), etc.)
+           - Check if chunk starts/ends at logical points
+        
+        2. Extract and organize:
+           - Key technical requirements
+           - Equipment specifications
+           - Cross-references to other sections
+           - Safety-critical elements
+           - Any defined terms or definitions
+        
+        3. Flag potential issues:
+           - Incomplete sections
+           - Split paragraphs
+           - Missing context
+           - Broken references
 
         Code section:
         {chunk}
 
-        Provide response in JSON format.
-        """
+        Provide response in JSON format with these exact keys:
+        {
+            "structure_check": {
+                "article_number": "",
+                "section_number": "",
+                "subsections": [],
+                "is_complete": true/false,
+                "issues": []
+            },
+            "technical_analysis": {
+                "requirements": [],
+                "specifications": [],
+                "cross_references": [],
+                "safety_elements": [],
+                "definitions": []
+            }
+        }"""
         try:
             response = self.client.chat.completions.create(
-                model="gpt-4o-mini",  # Example model
+                model="gpt-4o-mini",  # Keeping the existing model
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={ "type": "json_object" }
@@ -278,14 +309,14 @@ def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> Lis
     return [
         {
             "content": chunk.content,
-            "metadata": {
-                "section": chunk.section_number,
-                "article": chunk.article_number,
-                "page": chunk.page_number
-            },
+            "page_number": chunk.page_number,
+            "article_number": chunk.article_number,
+            "section_number": chunk.section_number,
+            "article_title": chunk.article_title or "",
+            "section_title": chunk.section_title or "",
             "context_tags": chunk.context_tags,
             "related_sections": chunk.related_sections,
-            "gpt_analysis": chunk.gpt_analysis
+            "gpt_analysis": chunk.gpt_analysis or {}
         }
         for chunk in chunks
     ]

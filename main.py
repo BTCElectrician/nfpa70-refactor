@@ -42,22 +42,19 @@ def main():
         chunks = chunker.chunk_nfpa70_content(pages_text)
         logger.info(f"Created {len(chunks)} text chunks.")
 
-        # Step 3: Convert chunk objects into dictionaries (including new fields)
-        logger.info("Creating chunk dictionaries with all relevant fields...")
+        # Step 3: Convert chunk objects into dictionaries with top-level fields
+        logger.info("Creating chunk dictionaries with top-level fields...")
         chunk_dicts = []
         for c in chunks:
             chunk_dicts.append({
                 "content": c.content,
-                "metadata": {
-                    "article": c.article_number,
-                    "section": c.section_number,
-                    "page": c.page_number
-                },
-                "context_tags": c.context_tags,
-                "related_sections": c.related_sections,
+                "page_number": c.page_number,
+                "article_number": c.article_number,
+                "section_number": c.section_number,
                 "article_title": c.article_title or "",
                 "section_title": c.section_title or "",
-                # If not doing GPT analysis, this can be an empty dict
+                "context_tags": c.context_tags,
+                "related_sections": c.related_sections,
                 "gpt_analysis": c.gpt_analysis or {}
             })
 
@@ -74,7 +71,7 @@ def main():
         logger.info(f"Search index '{index_name}' created/updated successfully.")
 
         logger.info("Main process completed without indexing. "
-                    "To index the data, run index_from_blob.py separately.")
+                    "To index the data, run 'index_from_blob.py' separately.")
 
     except Exception as e:
         logger.error(f"Error in main process: {str(e)}")

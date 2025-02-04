@@ -43,7 +43,19 @@ class DataIndexer:
             raise
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
-        """Prepare a document for indexing with proper vector handling."""
+        """
+        Prepare a document for indexing with proper vector handling.
+        Expects chunk to have top-level keys like:
+          - content (string)
+          - page_number (int)
+          - article_number (string)
+          - section_number (string)
+          - article_title (string)
+          - section_title (string)
+          - context_tags (list of strings)
+          - related_sections (list of strings)
+          - gpt_analysis (dict or list, which we json-serialize)
+        """
         try:
             self.logger.debug(f"[prepare_document] Processing chunk {chunk_id}")
             
@@ -51,30 +63,26 @@ class DataIndexer:
             content_vector = self.generate_embeddings(chunk["content"])
             self.logger.debug(f"[prepare_document] Generated vector with shape: {len(content_vector)}")
             
-            # Extract metadata
-            metadata = chunk.get("metadata", {})
-            
-            # Handle GPT analysis
+            # Convert gpt_analysis to string if it's a dict or list
             gpt_analysis = chunk.get("gpt_analysis", "")
             if isinstance(gpt_analysis, (dict, list)):
                 gpt_analysis = json.dumps(gpt_analysis)
             
-            # Create document with all fields
+            # Create the final document for Azure Search
             document = {
                 "id": f"doc_{chunk_id}",
                 "content": chunk["content"],
-                "page_number": metadata.get("page", 0),
-                "article_number": str(metadata.get("article") or ""),
-                "section_number": str(metadata.get("section") or ""),
+                "page_number": chunk.get("page_number", 0),
+                "article_number": str(chunk.get("article_number") or ""),
+                "section_number": str(chunk.get("section_number") or ""),
                 "article_title": chunk.get("article_title") or "",
                 "section_title": chunk.get("section_title") or "",
-                "content_vector": content_vector,  # Send as direct array of floats
+                "content_vector": content_vector,  # 1536 floats
                 "context_tags": list(chunk.get("context_tags") or []),
                 "related_sections": list(chunk.get("related_sections") or []),
                 "gpt_analysis": gpt_analysis
             }
             
-            # Validate document
             self._validate_document(document)
             self.logger.debug(f"[prepare_document] Document {chunk_id} prepared successfully")
             

@@ -1,4 +1,3 @@
-import os
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
@@ -21,8 +20,7 @@ from loguru import logger
 def create_search_index(service_endpoint: str, admin_key: str, index_name: str) -> None:
     """
     Create or update an Azure Cognitive Search index with vector search enabled.
-    Includes fields like article_title, section_title, and gpt_analysis.
-    Updated for azure-search-documents==11.5.2 with correct vector profile configuration.
+    Updated for azure-search-documents==11.5.2.
     """
     try:
         credential = AzureKeyCredential(admin_key)
@@ -39,7 +37,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         vector_search = VectorSearch(
             algorithms=[
                 HnswAlgorithmConfiguration(
-                    name="hnsw-config",  # Algorithm name
+                    name="hnsw-config",
                     parameters=HnswParameters(
                         m=4,
                         ef_construction=400,
@@ -50,8 +48,8 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             ],
             profiles=[
                 VectorSearchProfile(
-                    name="hnsw-profile",  # Profile name referenced by fields
-                    algorithm_configuration_name="hnsw-config"  # Must match algorithm name
+                    name="hnsw-profile",
+                    algorithm_configuration_name="hnsw-config"
                 )
             ]
         )
@@ -88,14 +86,14 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 name="section_title",
                 type=SearchFieldDataType.String
             ),
-            SearchableField(
-                name="related_sections",
+            SearchField(
+                name="context_tags",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True,
                 facetable=True
             ),
-            SearchableField(
-                name="context_tags",
+            SearchField(
+                name="related_sections",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
                 filterable=True,
                 facetable=True
@@ -104,13 +102,14 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 name="gpt_analysis",
                 type=SearchFieldDataType.String
             ),
-            # Vector field with correct v11.5.2 properties
+            # Updated vector field configuration for v11.5.2
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
                 searchable=True,
-                vector_search_dimensions=1536,  # Correct property name for v11.5.2
-                vector_search_profile_name="hnsw-profile"  # Must match profile name
+                retrievable=True,
+                vector_search_dimensions=1536,
+                vector_search_profile_name="hnsw-profile"
             )
         ]
 

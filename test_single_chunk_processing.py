@@ -56,6 +56,7 @@ def test_single_chunk_processing():
         logger.info("Starting test processing with vector validation")
         
         # 1. Validate environment
+        load_dotenv()
         validate_environment()
         
         # Load environment variables
@@ -72,7 +73,8 @@ def test_single_chunk_processing():
 
         if pages_text:
             first_page_num = list(pages_text.keys())[0]
-            logger.info(f"First page text sample: {pages_text[first_page_num][:200]}...")
+            sample_text = pages_text[first_page_num]
+            logger.info(f"First page text sample: {sample_text[:200]}...")
         else:
             logger.warning("No text extracted from PDF")
             return
@@ -100,26 +102,23 @@ def test_single_chunk_processing():
             first_chunk = chunks[0]
             logger.debug(f"First chunk structure: {json.dumps(first_chunk.__dict__, indent=2)}")
             
-            # Convert to expected dictionary format
+            # Convert to dictionary with top-level fields (no nested metadata)
             chunk_dict = {
                 "content": first_chunk.content,
-                "metadata": {
-                    "article": first_chunk.article_number,
-                    "section": first_chunk.section_number,
-                    "page": first_chunk.page_number
-                },
-                "context_tags": list(first_chunk.context_tags or []),
-                "related_sections": list(first_chunk.related_sections or []),
+                "page_number": first_chunk.page_number,
+                "article_number": first_chunk.article_number,
+                "section_number": first_chunk.section_number,
                 "article_title": first_chunk.article_title or "",
                 "section_title": first_chunk.section_title or "",
+                "context_tags": list(first_chunk.context_tags or []),
+                "related_sections": list(first_chunk.related_sections or []),
                 "gpt_analysis": first_chunk.gpt_analysis or {}
             }
             
-            # Log the chunk structure
             logger.info("Preparing to index first chunk...")
             logger.debug(f"Chunk dictionary: {json.dumps(chunk_dict, indent=2)}")
             
-            # Index the chunk
+            # Index this single chunk
             indexer.index_documents([chunk_dict])
             logger.info("Successfully indexed first chunk")
 
@@ -130,7 +129,6 @@ def test_single_chunk_processing():
                 credential=AzureKeyCredential(search_key)
             )
             
-            # Test basic search
             results = search_client.search(
                 search_text="*",
                 select=["id", "content", "page_number"],
