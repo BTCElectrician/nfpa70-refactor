@@ -8,12 +8,7 @@ from loguru import logger
 
 @dataclass
 class CodePosition:
-    """Tracks the current position within the electrical code document.
-    
-    This class maintains hierarchical context as we process the document,
-    ensuring we understand the relationship between chunks even when they
-    don't contain explicit section numbers.
-    """
+    """Tracks the current position within the electrical code document."""
     article_number: Optional[str] = None
     article_title: Optional[str] = None
     section_number: Optional[str] = None
@@ -121,51 +116,50 @@ class ElectricalCodeChunker:
         return list(set(reference_pattern.findall(text)))
 
     def analyze_chunk_with_gpt(self, chunk: str) -> Dict:
-        """Use GPT to analyze chunk content."""
+        """Use GPT to clean text and analyze content."""
         if not self.client:
             return {}
             
-        # Define prompt parts separately to avoid f-string formatting issues
-        prompt_prefix = "Analyze this section of the National Electrical Code carefully.\n\n"
-        prompt_content = f"Code text:\n{chunk}\n\n"
-        prompt_instructions = """Analyze and extract:
-1. Technical Requirements
-2. Safety Implications
-3. Related References
-4. Key Equipment
+        prompt = """Analyze and clean this section of the National Electrical Code.
+First, fix any OCR artifacts and normalize the text while preserving technical terms and measurements.
+Then analyze the cleaned text.
+
+Original text:
+{text}
 
 Return the analysis in this exact JSON structure:
 {
+    "cleaned_text": "The complete cleaned version of the text",
     "requirements": [],
     "safety_elements": [],
     "related_sections": [],
     "equipment": []
 }"""
 
-        # Combine parts into final prompt
-        prompt = prompt_prefix + prompt_content + prompt_instructions
-
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{
+                    "role": "user", 
+                    "content": prompt.format(text=chunk)
+                }],
                 temperature=0,
                 response_format={ "type": "json_object" }
             )
-            return json.loads(response.choices[0].message.content)
+            result = json.loads(response.choices[0].message.content)
+            
+            # Update chunk with cleaned text
+            if "cleaned_text" in result:
+                chunk = result["cleaned_text"]
+                del result["cleaned_text"]
+                
+            return result
         except Exception as e:
             self.logger.error(f"Error in GPT analysis: {str(e)}")
             return {}
 
     def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
-        """Process NFPA 70 content into context-aware chunks.
-        
-        Args:
-            pages_text: Dict mapping page numbers to text content
-            
-        Returns:
-            List of CodeChunk objects with enhanced context
-        """
+        """Process NFPA 70 content into context-aware chunks."""
         chunks = []
         self.position = CodePosition()  # Reset position tracker
         
@@ -190,7 +184,8 @@ Return the analysis in this exact JSON structure:
                     # Save previous chunk if it exists
                     if current_chunk:
                         chunk_text = ' '.join(current_chunk)
-                        gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
+                        # Get analysis with cleaned text
+                        analysis_result = self.analyze_chunk_with_gpt(chunk_text)
                         
                         chunks.append(CodeChunk(
                             content=chunk_text,
@@ -201,7 +196,7 @@ Return the analysis in this exact JSON structure:
                             section_title=self.position.section_title,
                             context_tags=self._identify_context(chunk_text),
                             related_sections=self._find_related_sections(chunk_text),
-                            gpt_analysis=gpt_analysis,
+                            gpt_analysis=analysis_result,
                             hierarchy=self.position.hierarchy.copy(),
                             context_before=self.position.context_before,
                             context_after=self.position.context_after
@@ -213,7 +208,7 @@ Return the analysis in this exact JSON structure:
             # Handle last chunk on page
             if current_chunk:
                 chunk_text = ' '.join(current_chunk)
-                gpt_analysis = self.analyze_chunk_with_gpt(chunk_text)
+                analysis_result = self.analyze_chunk_with_gpt(chunk_text)
                 
                 chunks.append(CodeChunk(
                     content=chunk_text,
@@ -224,7 +219,7 @@ Return the analysis in this exact JSON structure:
                     section_title=self.position.section_title,
                     context_tags=self._identify_context(chunk_text),
                     related_sections=self._find_related_sections(chunk_text),
-                    gpt_analysis=gpt_analysis,
+                    gpt_analysis=analysis_result,
                     hierarchy=self.position.hierarchy.copy(),
                     context_before=self.position.context_before,
                     context_after=self.position.context_after

@@ -29,3 +29,5 @@ obj/
 # Markdown files to ignore
 snapshot-nfpa70refactor.md
 upgrade.md 
+.DS_Store
+.DS_Store
