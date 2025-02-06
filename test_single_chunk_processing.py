@@ -141,7 +141,8 @@ def test_single_chunk_processing():
                     VectorizedQuery(
                         vector=vector,
                         fields="content_vector",
-                        k=5
+                        k_nearest_neighbors=5,  # Updated parameter name
+                        exhaustive=True
                     )
                 ],
                 select=["id", "content", "page_number"]

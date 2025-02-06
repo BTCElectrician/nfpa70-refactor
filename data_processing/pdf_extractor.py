@@ -31,42 +31,18 @@ class PDFExtractor:
             
             for page_num in range(pages_to_process):
                 page = doc[page_num]
-                
-                # Extract text using rawdict mode for better metadata
-                raw_dict = page.get_text("rawdict")
-                text_parts = []
-                
-                # Process each block in the rawdict
-                for block in raw_dict.get("blocks", []):
-                    # Skip non-text blocks
-                    if "lines" not in block:
-                        continue
-                        
-                    block_parts = []
-                    for line in block["lines"]:
-                        line_text = []
-                        for span in line.get("spans", []):
-                            # Only include text spans (skip other content types)
-                            if span.get("text"):
-                                # Skip text that might be headers/footers
-                                if span.get("size", 0) > 20:  # Skip very large text
-                                    continue
-                                line_text.append(span["text"])
-                                
-                        if line_text:
-                            block_parts.append(" ".join(line_text))
-                    
-                    if block_parts:
-                        text_parts.append("\n".join(block_parts))
-                
-                text = "\n".join(text_parts)
+                text = page.get_text("text")
                 
                 # Only store non-empty pages
                 if text.strip():
                     # Store with page number (1-based)
                     pages_text[page_num + 1] = text
                 
-            self.logger.info(f"Successfully processed {len(pages_text)} pages")
+            if not pages_text:
+                self.logger.warning("No text extracted from PDF")
+            else:
+                self.logger.info(f"Successfully processed {len(pages_text)} pages")
+                
             return pages_text
             
         except Exception as e:

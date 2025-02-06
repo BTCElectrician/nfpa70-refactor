@@ -120,40 +120,28 @@ class ElectricalCodeChunker:
         if not self.client:
             return {}
             
-        prompt = """Analyze and clean this section of the National Electrical Code.
-First, fix any OCR artifacts and normalize the text while preserving technical terms and measurements.
-Then analyze the cleaned text.
-
-Original text:
-{text}
-
-Return the analysis in this exact JSON structure:
-{
-    "cleaned_text": "The complete cleaned version of the text",
-    "requirements": [],
-    "safety_elements": [],
-    "related_sections": [],
-    "equipment": []
-}"""
-
         try:
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{
+                    "role": "system", 
+                    "content": "You are a text cleaning and analysis assistant. Return JSON with keys: cleaned_text, requirements, safety_elements, related_sections, equipment"
+                },
+                {
                     "role": "user", 
-                    "content": prompt.format(text=chunk)
+                    "content": f"Clean and analyze this NEC text: {chunk}"
                 }],
                 temperature=0,
-                response_format={ "type": "json_object" }
+                response_format={"type": "json_object"}
             )
-            result = json.loads(response.choices[0].message.content)
             
-            # Update chunk with cleaned text
-            if "cleaned_text" in result:
-                chunk = result["cleaned_text"]
-                del result["cleaned_text"]
-                
-            return result
+            try:
+                result = json.loads(response.choices[0].message.content)
+                return result
+            except json.JSONDecodeError:
+                self.logger.error("Failed to parse GPT response as JSON")
+                return {}
+            
         except Exception as e:
             self.logger.error(f"Error in GPT analysis: {str(e)}")
             return {}
