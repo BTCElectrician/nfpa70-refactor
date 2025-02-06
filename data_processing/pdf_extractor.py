@@ -10,15 +10,49 @@ class PDFExtractor:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Common OCR/PDF extraction artifacts to clean
+        # Enhanced OCR/PDF extraction artifacts to clean
         self.corrections = {
+            # Common OCR errors
+            r"standard'i": "standards",
+            r"standard<;": "standards",
+            r"o'hile": "while",
+            r"\\lt-arranty": "warranty",
+            r"iJ1jury": "injury",
+            r"what'[ios]oever": "whatsoever",
+            r"a'-ailable": "available",
+            r"a'i": "as",
+            r"ha'i": "has",
+            r"content'i": "contents",
+            r"product'i": "products",
+            r"requirement<;": "requirements",
+            r"consist<;": "consists",
+            r"TIA'i": "TIAs",
+            r"innm-ations": "innovations",
+            r"method'i": "methods",
+            r"incident'i": "incidents",
+            
+            # Basic cleanup
             r'o;': 's',
             r'\"': '"',
             r'\\"': '"',
             r'\\\'': "'",
             r'\s+': ' ',
+            
+            # Number formatting
             r'(?<=\d)\s*\.\s*(?=\d)': '.',  # Fix broken decimal points
             r'(?<=\d)\s*-\s*(?=\d)': '-',    # Fix broken ranges
+            
+            # Special characters
+            r'\u00ae': '®',  # Registered trademark
+            r'\u0089': '©',  # Copyright symbol
+            r'\u01d2': '®',  # Another variant of registered trademark
+            
+            # Common formatting issues
+            r'\\[a-z-]+': '',  # Remove escaped formatting codes
+            r'\s+([.,;:])': r'\1',  # Fix spacing before punctuation
+            r'([.,;:])\s+': r'\1 ',  # Normalize spacing after punctuation
+            r'\s{2,}': ' ',  # Remove multiple spaces
+            r'\n{3,}': '\n\n',  # Normalize multiple newlines
         }
         
         # Important electrical terms to preserve
@@ -69,12 +103,12 @@ class PDFExtractor:
         # Preserve electrical measurements and units
         for pattern, replacement in self.electrical_terms.items():
             text = re.sub(pattern, replacement, text)
+            
+        # Final cleanup
+        text = re.sub(r'\s+', ' ', text)  # Normalize spaces
+        text = text.strip()
         
-        # Remove multiple spaces and normalize newlines
-        text = re.sub(r'\s+', ' ', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        
-        return text.strip()
+        return text
 
     def extract_text_from_pdf(self, pdf_path: Path, max_pages: int = None) -> Dict[int, str]:
         """
@@ -98,8 +132,17 @@ class PDFExtractor:
             for page_num in range(pages_to_process):
                 page = doc[page_num]
                 
-                # Extract text with better layout preservation
-                text = page.get_text("text")
+                # Extract text using blocks mode for better structure preservation
+                blocks = page.get_text("blocks")
+                
+                # Combine blocks with proper spacing
+                text_parts = []
+                for block in blocks:
+                    # block[4] contains the text content in blocks mode
+                    if isinstance(block, tuple) and len(block) > 4:
+                        text_parts.append(block[4])
+                
+                text = "\n".join(text_parts)
                 
                 # Clean the extracted text
                 cleaned_text = self.clean_text(text)
@@ -114,4 +157,4 @@ class PDFExtractor:
             
         except Exception as e:
             self.logger.error(f"Error processing PDF: {str(e)}")
-            raise ValueError(f"Failed to process PDF: {str(e)}") from e 
+            raise ValueError(f"Failed to process PDF: {str(e)}") from e
