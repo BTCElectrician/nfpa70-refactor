@@ -125,11 +125,31 @@ class ElectricalCodeChunker:
                 model="gpt-4o-mini",
                 messages=[{
                     "role": "system", 
-                    "content": "You are a text cleaning and analysis assistant. Return JSON with keys: cleaned_text, requirements, safety_elements, related_sections, equipment"
+                    "content": """You are an expert electrical code analyzer processing NFPA 70 (NEC) text chunks. For each text chunk, return a JSON object with the following structure:
+
+                    // Top-level fields (preserve these exactly, do not nest them under any other key)
+                    article_number: string,
+                    article_title: string,
+                    section_number: string,
+                    section_title: string,
+
+                    // Analysis results
+                    cleaned_text: string,          // OCR-corrected but technically accurate text
+                    
+                    hierarchy: {
+                        subsection_letter: string,   // e.g., A, B, C, etc.
+                        continues_from: string,      // Reference to the previous section if the section is split
+                        continues_to: string         // Reference to the next section if the section continues
+                    },
+
+                    requirements: string[],        // List of code requirements found in the text
+                    safety_elements: string[],     // List of safety-related items identified
+                    related_sections: string[],    // List of referenced code sections
+                    equipment: string[]            // List of equipment or components mentioned"""
                 },
                 {
                     "role": "user", 
-                    "content": f"Clean and analyze this NEC text: {chunk}"
+                    "content": f"Analyze this NEC text chunk: {chunk}"
                 }],
                 temperature=0,
                 response_format={"type": "json_object"}

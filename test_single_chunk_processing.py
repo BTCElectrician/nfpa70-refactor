@@ -68,10 +68,23 @@ def test_single_chunk_processing():
         openai_key = os.getenv('OPENAI_API_KEY')
         test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-test')
 
-        # 2. Extract from PDF (first three pages for testing)
-        logger.info("Extracting text from PDF (3 pages max)...")
+        # 2. Extract from PDF (starting at page 26)
+        logger.info("Extracting text from pages 26-28...")
         extractor = PDFExtractor()
-        pages_text = extractor.extract_text_from_pdf(Path(pdf_path), max_pages=3)
+        pages_text = {}
+        
+        # Get pages 26-28 specifically
+        full_text = extractor.extract_text_from_pdf(Path(pdf_path))
+        for page_num in range(26, 29):  # pages 26, 27, 28
+            if page_num in full_text:
+                pages_text[page_num] = full_text[page_num]
+        
+        # Validate we got the correct pages
+        if not pages_text or min(pages_text.keys()) < 26:
+            logger.error("Failed to get pages starting from 26")
+            return
+            
+        logger.info(f"Successfully extracted pages: {list(pages_text.keys())}")
 
         if pages_text:
             first_page_num = list(pages_text.keys())[0]
