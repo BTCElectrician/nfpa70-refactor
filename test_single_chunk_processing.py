@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
+import time
 
 # Azure
 from azure.search.documents import SearchClient
@@ -48,10 +49,7 @@ def validate_environment():
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
 def test_single_chunk_processing():
-    """
-    Tests the pipeline on a single chunk of text with enhanced vector validation.
-    Updated for current Azure Search vector query syntax.
-    """
+    """Tests the pipeline on a single chunk of text with enhanced vector validation."""
     try:
         # Set up logging
         setup_logging()
@@ -115,9 +113,18 @@ def test_single_chunk_processing():
         # 6. Process and index first chunk only
         if chunks:
             first_chunk = chunks[0]
-            logger.debug(f"First chunk structure: {json.dumps(first_chunk.__dict__, indent=2)}")
+            logger.debug("First chunk structure: %s", json.dumps({
+                "content": first_chunk.content[:200] + "...",  # First 200 chars for brevity
+                "page_number": first_chunk.page_number,
+                "article_number": first_chunk.article_number,
+                "section_number": first_chunk.section_number,
+                "article_title": first_chunk.article_title,
+                "section_title": first_chunk.section_title,
+                "context_tags": first_chunk.context_tags,
+                "related_sections": first_chunk.related_sections
+            }, indent=2))
             
-            # Convert to dictionary with top-level fields (no nested metadata)
+            # Convert to dictionary with top-level fields
             chunk_dict = {
                 "content": first_chunk.content,
                 "page_number": first_chunk.page_number,
@@ -125,9 +132,8 @@ def test_single_chunk_processing():
                 "section_number": first_chunk.section_number,
                 "article_title": first_chunk.article_title or "",
                 "section_title": first_chunk.section_title or "",
-                "context_tags": list(first_chunk.context_tags or []),
-                "related_sections": list(first_chunk.related_sections or []),
-                "gpt_analysis": first_chunk.gpt_analysis or {}
+                "context_tags": list(first_chunk.context_tags),
+                "related_sections": list(first_chunk.related_sections)
             }
             
             logger.info("Preparing to index first chunk...")
@@ -137,7 +143,7 @@ def test_single_chunk_processing():
             indexer.index_documents([chunk_dict])
             logger.info("Successfully indexed first chunk")
 
-            # 7. Verify indexed content using current vector search syntax
+            # 7. Verify indexed content
             search_client = SearchClient(
                 endpoint=search_endpoint,
                 index_name=test_index_name,
@@ -147,29 +153,41 @@ def test_single_chunk_processing():
             # Get the embedding for verification search
             vector = indexer.generate_embeddings(chunk_dict["content"])
             
-            # Perform vector search with updated syntax
-            results = search_client.search(
-                search_text="",  # Empty for pure vector search
-                vector_queries=[
-                    VectorizedQuery(
-                        vector=vector,
-                        fields="content_vector",
-                        k_nearest_neighbors=5,  # Updated parameter name
-                        exhaustive=True
-                    )
-                ],
-                select=["id", "content", "page_number"]
+            # Debug the vector before search
+            logger.debug(f"Vector length: {len(vector)}")
+            logger.debug(f"Vector sample (first 5 values): {vector[:5]}")
+
+            # Create the vector query
+            vector_query = VectorizedQuery(
+                vector=vector,
+                k_nearest_neighbors=5,
+                fields="content_vector"
             )
-            
-            hits = list(results)
-            logger.info(f"Found {len(hits)} documents in test index")
-            
-            if hits:
+
+            # Add delay for index update
+            logger.info("Waiting 3 seconds for index to update...")
+            time.sleep(3)
+
+            # Perform the search
+            results = search_client.search(
+                search_text=None,
+                vector_queries=[vector_query],
+                select=["id", "content", "page_number", "article_number", "section_number"]
+            )
+
+            # Process results
+            results_list = list(results)
+            logger.info(f"Found {len(results_list)} documents in test index")
+
+            if results_list:
+                logger.debug("First result details:")
+                logger.debug(f"Content: {results_list[0].get('content')[:200]}...")
+                logger.debug(f"Article: {results_list[0].get('article_number')}")
+                logger.debug(f"Section: {results_list[0].get('section_number')}")
+                logger.debug(f"Page: {results_list[0].get('page_number')}")
                 logger.info("Test completed successfully!")
             else:
                 logger.warning("No documents found in index after upload")
-        else:
-            logger.warning("No chunks created from PDF")
 
     except Exception as e:
         logger.error(f"Test failed: {str(e)}")

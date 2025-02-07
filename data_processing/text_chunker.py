@@ -59,120 +59,50 @@ class CodePosition:
 
 @dataclass
 class CodeChunk:
-    """Represents a chunk of electrical code with enhanced context."""
-    content: str
-    page_number: int
-    article_number: Optional[str] = None
-    article_title: Optional[str] = None
-    section_number: Optional[str] = None
-    section_title: Optional[str] = None
-    context_tags: List[str] = field(default_factory=list)
-    related_sections: List[str] = field(default_factory=list)
-    gpt_analysis: Dict = field(default_factory=dict)
-    hierarchy: List[str] = field(default_factory=list)
-    context_before: Optional[str] = None
-    context_after: Optional[str] = None
-    cleaned_text: Optional[str] = None
-    ocr_confidence: float = 1.0
+    """Represents a chunk of electrical code with essential metadata."""
+    content: str                     # The actual code text
+    page_number: int                 # Page number in document
+    article_number: Optional[str]    # Article number (e.g., "90")
+    section_number: Optional[str]    # Section number (e.g., "90.2")
+    article_title: Optional[str]     # Title of the article
+    section_title: Optional[str]     # Title of the section
+    context_tags: List[str]         # Technical context tags
+    related_sections: List[str]      # Referenced code sections
 
 class ElectricalCodeChunker:
-    """Enhanced chunking for electrical code text with GPT-based OCR cleanup."""
+    """Chunks electrical code text with GPT-based cleanup and analysis."""
     
     def __init__(self, openai_api_key: Optional[str] = None):
-        """Initialize the chunker with optional OpenAI integration."""
         self.logger = logger
         self.client = OpenAI(api_key=openai_api_key) if openai_api_key else None
-        self.position = CodePosition()
         
+        # Define technical contexts for tagging
         self.context_mapping = {
             'service_equipment': [
-                'service equipment', 'service entrance', 'service drop', 'service lateral',
-                'meter', 'metering', 'service disconnect', 'main disconnect', 'service panel',
-                'switchboard', 'switchgear', 'panelboard'
+                'service equipment', 'service entrance', 'service drop',
+                'meter', 'service disconnect', 'main disconnect'
             ],
             'conductors': [
-                'conductor', 'wire', 'cable', 'AWG', 'kcmil', 'THHN', 'THWN', 'XHHW',
-                'multiconductor', 'stranded', 'solid', 'copper', 'aluminum', 'CU', 'AL'
+                'conductor', 'wire', 'cable', 'AWG', 'kcmil',
+                'copper', 'aluminum'
             ],
             'raceway': [
-                'EMT', 'IMC', 'RMC', 'PVC', 'RTRC', 'LFMC', 'LFNC', 'FMC',
-                'electrical metallic tubing', 'intermediate metal conduit',
-                'rigid metal conduit', 'liquidtight flexible metal conduit'
+                'EMT', 'IMC', 'RMC', 'PVC', 'conduit',
+                'electrical metallic tubing'
             ],
             'grounding': [
-                'ground', 'grounded', 'grounding', 'earthing', 'bonding', 'GEC',
-                'equipment grounding conductor', 'ground fault', 'GFCI', 'GFPE'
+                'ground', 'grounding', 'bonding', 'GEC',
+                'equipment grounding conductor'
             ],
             'overcurrent': [
-                'breaker', 'circuit breaker', 'fuse', 'overcurrent', 'overload',
-                'short circuit', 'AFCI', 'arc fault', 'GFCI', 'ground fault'
-            ],
-            'special_locations': [
-                'hazardous', 'classified', 'class I', 'class II', 'class III',
-                'division 1', 'division 2', 'zone 0', 'zone 1', 'zone 2'
-            ],
-            'installation': [
-                'support', 'securing', 'fastening', 'mounting', 'attachment',
-                'spacing', 'interval', 'strap', 'hanger', 'bracket', 'anchor'
+                'breaker', 'circuit breaker', 'fuse', 'overcurrent',
+                'AFCI', 'GFCI'
             ]
         }
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def correct_line_with_gpt(self, line: str) -> Tuple[str, float]:
-        """Use GPT to correct potential OCR errors in a single line of text."""
-        if not self.client or not line.strip():
-            return line, 1.0
-        
-        try:
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert electrical code proofreader. Return a JSON object with: {'corrected_text': string, 'confidence': float (0-1)}"
-                    },
-                    {
-                        "role": "user",
-                        "content": f"Fix OCR errors in this line: {line}"
-                    }
-                ],
-                temperature=0,
-                response_format={"type": "json_object"}
-            )
-            
-            result = json.loads(response.choices[0].message.content)
-            return result.get("corrected_text", line), result.get("confidence", 1.0)
-            
-        except Exception as e:
-            self.logger.error(f"Error during GPT OCR correction: {str(e)}")
-            return line, 1.0
-
-    def _identify_context(self, text: str) -> List[str]:
-        """Identify technical context tags for the text."""
-        text_lower = text.lower()
-        tags = []
-        for context, keywords in self.context_mapping.items():
-            if any(keyword in text_lower for keyword in keywords):
-                tags.append(context)
-        return list(set(tags))
-
-    def _find_related_sections(self, text: str) -> List[str]:
-        """Find referenced sections in the text."""
-        patterns = [
-            r'(?:see\s+(?:Section\s+)?|with\s+)(\d+\.\d+(?:\([A-Z]\))?)',
-            r'(?:in accordance with|as specified in)\s+(?:Section\s+)?(\d+\.\d+(?:\([A-Z]\))?)',
-            r'(?:refer to|referenced in)\s+(?:Section\s+)?(\d+\.\d+(?:\([A-Z]\))?)'
-        ]
-        
-        references = []
-        for pattern in patterns:
-            references.extend(re.findall(pattern, text, re.IGNORECASE))
-        
-        return list(set(references))
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def analyze_chunk_with_gpt(self, chunk: str) -> Dict:
-        """Use GPT to clean text and analyze content."""
+    def process_chunk_with_gpt(self, text: str) -> Dict:
+        """Single GPT call to clean and analyze text."""
         if not self.client:
             return {}
             
@@ -181,50 +111,35 @@ class ElectricalCodeChunker:
                 model="gpt-4o-mini",
                 messages=[{
                     "role": "system", 
-                    "content": "You are an expert electrical code analyzer processing NFPA 70 (NEC) text chunks. Return a JSON object with the following structure:\n\n\
-                    article_number: string,\n\
-                    article_title: string,\n\
-                    section_number: string,\n\
-                    section_title: string,\n\
-                    content: string,              # Original content for reference\n\
-                    cleaned_text: string,         # OCR-corrected but technically accurate text\n\
-                    page_number: number,          # Preserve original page number\n\
-                    context_tags: string[],       # Electrical context tags\n\
-                    related_sections: string[],   # Referenced code sections\n\n\
-                    gpt_analysis: {\n\
-                        subsection_info: {\n\
-                            letter: string,           # A, B, C, etc.\n\
-                            continues_from: string,   # Previous section reference if mid-section\n\
-                            continues_to: string      # Next section reference if continues\n\
-                        },\n\
-                        requirements: string[],     # Specific code requirements\n\
-                        safety_elements: string[],  # Safety-related items\n\
-                        equipment: string[]         # Equipment/components mentioned\n\
-                    }"
+                    "content": """You are processing NFPA 70 (NEC) text. Clean any OCR errors and analyze the content.
+                    Return a JSON object with:
+                    {
+                        "content": string,         # OCR-corrected text
+                        "article_number": string,
+                        "section_number": string,
+                        "article_title": string,
+                        "section_title": string,
+                        "context_tags": string[],  # Technical categories
+                        "related_sections": string[]  # Referenced sections
+                    }"""
                 },
                 {
                     "role": "user", 
-                    "content": f"Clean and analyze this NEC text: {chunk}"
+                    "content": f"Process this NEC text: {text}"
                 }],
                 temperature=0,
                 response_format={"type": "json_object"}
             )
             
-            try:
-                result = json.loads(response.choices[0].message.content)
-                return result
-            except json.JSONDecodeError:
-                self.logger.error("Failed to parse GPT response as JSON")
-                return {}
+            return json.loads(response.choices[0].message.content)
                 
         except Exception as e:
-            self.logger.error(f"Error in GPT analysis: {str(e)}")
+            self.logger.error(f"Error in GPT processing: {str(e)}")
             return {}
 
     def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
         """Process NFPA 70 content into context-aware chunks."""
         chunks = []
-        self.position = CodePosition()
         
         if not pages_text:
             return chunks
@@ -237,64 +152,42 @@ class ElectricalCodeChunker:
             current_chunk = []
             
             for line in lines:
-                corrected_line, confidence = self.correct_line_with_gpt(line.strip())
-                if not corrected_line:
+                if not line.strip():
                     continue
 
-                self.position.update_from_text(corrected_line)
-                
-                if re.search(r'ARTICLE\s+\d+|^\d+\.\d+\s+[A-Z]', corrected_line):
+                if re.search(r'ARTICLE\s+\d+|^\d+\.\d+\s+[A-Z]', line):
                     if current_chunk:
                         chunk_text = ' '.join(current_chunk)
-                        analysis_result = self.analyze_chunk_with_gpt(chunk_text)
+                        analysis = self.process_chunk_with_gpt(chunk_text)
                         
                         chunks.append(CodeChunk(
-                            content=chunk_text,
+                            content=analysis.get('content', chunk_text),
                             page_number=page_num,
-                            article_number=self.position.article_number,
-                            article_title=self.position.article_title,
-                            section_number=self.position.section_number,
-                            section_title=self.position.section_title,
-                            context_tags=self._identify_context(chunk_text),
-                            related_sections=self._find_related_sections(chunk_text),
-                            gpt_analysis=analysis_result,
-                            hierarchy=self.position.hierarchy.copy(),
-                            context_before=self.position.context_before,
-                            context_after=self.position.context_after,
-                            cleaned_text=analysis_result.get('cleaned_text'),
-                            ocr_confidence=confidence
+                            article_number=analysis.get('article_number'),
+                            article_title=analysis.get('article_title'),
+                            section_number=analysis.get('section_number'),
+                            section_title=analysis.get('section_title'),
+                            context_tags=analysis.get('context_tags', []),
+                            related_sections=analysis.get('related_sections', [])
                         ))
-                    current_chunk = [corrected_line]
+                    current_chunk = [line]
                 else:
-                    current_chunk.append(corrected_line)
+                    current_chunk.append(line)
             
             if current_chunk:
                 chunk_text = ' '.join(current_chunk)
-                analysis_result = self.analyze_chunk_with_gpt(chunk_text)
+                analysis = self.process_chunk_with_gpt(chunk_text)
                 
                 chunks.append(CodeChunk(
-                    content=chunk_text,
+                    content=analysis.get('content', chunk_text),
                     page_number=page_num,
-                    article_number=self.position.article_number,
-                    article_title=self.position.article_title,
-                    section_number=self.position.section_number,
-                    section_title=self.position.section_title,
-                    context_tags=self._identify_context(chunk_text),
-                    related_sections=self._find_related_sections(chunk_text),
-                    gpt_analysis=analysis_result,
-                    hierarchy=self.position.hierarchy.copy(),
-                    context_before=self.position.context_before,
-                    context_after=self.position.context_after,
-                    cleaned_text=analysis_result.get('cleaned_text'),
-                    ocr_confidence=1.0
+                    article_number=analysis.get('article_number'),
+                    article_title=analysis.get('article_title'),
+                    section_number=analysis.get('section_number'),
+                    section_title=analysis.get('section_title'),
+                    context_tags=analysis.get('context_tags', []),
+                    related_sections=analysis.get('related_sections', [])
                 ))
-
-        # Link context before/after each chunk
-        for i in range(len(chunks)):
-            if i > 0:
-                chunks[i].context_before = chunks[i-1].content[:200]
-            if i < len(chunks) - 1:
-                chunks[i].context_after = chunks[i+1].content[:200]
 
         return chunks
 
@@ -314,9 +207,9 @@ def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> Lis
             "section_title": chunk.section_title or "",
             "context_tags": chunk.context_tags,
             "related_sections": chunk.related_sections,
-            "gpt_analysis": chunk.gpt_analysis or {},
-            "cleaned_text": chunk.cleaned_text,
-            "ocr_confidence": chunk.ocr_confidence
+            "gpt_analysis": {},
+            "cleaned_text": chunk.content,
+            "ocr_confidence": 1.0
         }
         for chunk in chunks
     ]
