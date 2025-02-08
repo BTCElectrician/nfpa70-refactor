@@ -42,6 +42,32 @@ class DataIndexer:
             self.logger.error(f"Error generating embeddings: {str(e)}")
             raise
 
+    def generate_embeddings_batch(self, texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
+        """
+        Generate embeddings for multiple texts in a single API call. 
+        Returns a list of embeddings, one per input text.
+        """
+        try:
+            self.logger.debug(f"[generate_embeddings_batch] Generating embeddings for {len(texts)} texts")
+            response = self.openai_client.embeddings.create(
+                input=texts,
+                model=model
+            )
+            # Convert each embedding to a list of floats
+            embeddings = []
+            for idx, record in enumerate(response.data):
+                emb = [float(x) for x in record.embedding]
+                # Verify dimension
+                if len(emb) != 1536:
+                    raise ValueError(f"Unexpected embedding dimension for text {idx}: {len(emb)}")
+                embeddings.append(emb)
+
+            self.logger.debug("[generate_embeddings_batch] Successfully generated batch embeddings")
+            return embeddings
+        except Exception as e:
+            self.logger.error(f"Error generating batch embeddings: {str(e)}")
+            raise
+
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
         """
         Prepare a document for indexing with proper vector handling.
@@ -102,35 +128,71 @@ class DataIndexer:
         if not all(isinstance(x, float) for x in document["content_vector"]):
             raise ValueError("All vector values must be float type")
 
-    def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 50) -> None:
-        """Index all documents with progress tracking and error handling."""
+    def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 50, embed_batch_size: int = 16) -> None:
+        """
+        Index all documents using batched embeddings and batched upload.
+        Args:
+            chunks: List of chunk dictionaries with 'content' etc.
+            batch_size: How many documents to upload in one batch to Azure Search
+            embed_batch_size: How many chunks to embed in one call to OpenAI embeddings
+        """
         try:
             total_chunks = len(chunks)
             self.logger.info(f"Starting indexing of {total_chunks} chunks")
-            documents = []
-            
-            # Process chunks with progress bar
-            for i in tqdm(range(total_chunks), desc="Processing chunks"):
-                try:
-                    self.logger.debug(f"Processing chunk {i}")
-                    doc = self.prepare_document(chunks[i], i)
-                    documents.append(doc)
+
+            documents_to_upload = []
+
+            # Process embeddings in sub-batches
+            for start_idx in tqdm(range(0, total_chunks, embed_batch_size), desc="Embedding chunks"):
+                end_idx = min(start_idx + embed_batch_size, total_chunks)
+                batch_texts = [c["content"] for c in chunks[start_idx:end_idx]]
+
+                # Generate batch embeddings
+                embeddings = self.generate_embeddings_batch(batch_texts)
+
+                # Build document objects
+                for i, emb in enumerate(embeddings):
+                    chunk_idx = start_idx + i
+                    chunk = chunks[chunk_idx]
                     
-                    # Upload in batches
-                    if len(documents) >= batch_size or i == total_chunks - 1:
-                        self.logger.debug(f"Uploading batch of {len(documents)} documents")
+                    doc_id = f"doc_{chunk_idx}"
+                    document = {
+                        "id": doc_id,
+                        "content": chunk.get("content", ""),
+                        "page_number": chunk.get("page_number", 0),
+                        "article_number": str(chunk.get("article_number") or ""),
+                        "section_number": str(chunk.get("section_number") or ""),
+                        "article_title": chunk.get("article_title") or "",
+                        "section_title": chunk.get("section_title") or "",
+                        "content_vector": emb,
+                        "context_tags": list(chunk.get("context_tags") or []),
+                        "related_sections": list(chunk.get("related_sections") or [])
+                    }
+
+                    self._validate_document(document)
+                    documents_to_upload.append(document)
+
+                    # Upload in smaller batches
+                    if len(documents_to_upload) >= batch_size:
+                        self.logger.debug(f"Uploading batch of {len(documents_to_upload)} documents")
                         try:
-                            results = self.search_client.upload_documents(documents=documents)
+                            results = self.search_client.upload_documents(documents=documents_to_upload)
                             self.logger.info(f"Successfully indexed batch of {len(results)} documents")
-                            documents = []
+                            documents_to_upload = []
                         except Exception as e:
                             self.logger.error(f"Error uploading batch: {str(e)}")
                             raise
-                
+
+            # Upload any remaining documents
+            if documents_to_upload:
+                self.logger.debug(f"Uploading final batch of {len(documents_to_upload)} documents")
+                try:
+                    results = self.search_client.upload_documents(documents=documents_to_upload)
+                    self.logger.info(f"Successfully indexed final batch of {len(results)} documents")
                 except Exception as e:
-                    self.logger.error(f"Error processing chunk {i}: {str(e)}")
+                    self.logger.error(f"Error uploading final batch: {str(e)}")
                     raise
-                    
+
         except Exception as e:
             self.logger.error(f"Error in indexing process: {str(e)}")
             raise
