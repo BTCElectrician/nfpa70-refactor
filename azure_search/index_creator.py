@@ -124,12 +124,6 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 facetable=True
             ),
             
-            # GPT analysis results
-            SearchableField(
-                name="gpt_analysis",
-                type=SearchFieldDataType.String
-            ),
-            
             # Vector field for semantic search
             # Must match OpenAI's embedding dimension (1536)
             SearchField(

@@ -54,8 +54,7 @@ def main():
                 "article_title": c.article_title or "",
                 "section_title": c.section_title or "",
                 "context_tags": c.context_tags,
-                "related_sections": c.related_sections,
-                "gpt_analysis": c.gpt_analysis or {}
+                "related_sections": c.related_sections
             })
 
         # Step 4: Save processed chunks to blob storage
