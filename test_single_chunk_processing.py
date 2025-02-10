@@ -47,7 +47,7 @@ def validate_environment():
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
 def test_single_chunk_processing():
-    """Test the processing pipeline with the new batched GPT approach."""
+    """Test the processing pipeline with enhanced logging."""
     try:
         setup_logging()
         logger.info("Starting test processing with vector validation")
@@ -63,34 +63,50 @@ def test_single_chunk_processing():
         test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-test')
 
         # Extract PDF text
-        logger.info("Extracting text from pages 26-28...")
+        logger.info("=== PDF EXTRACTION START ===")
         extractor = PDFExtractor()
         pages_text = {}
         
         full_text = extractor.extract_text_from_pdf(Path(pdf_path))
-        for page_num in range(26, 29):
+        for page_num in range(22, 25):  # These are the 70-XX page numbers
             if page_num in full_text:
                 pages_text[page_num] = full_text[page_num]
         
-        if not pages_text or min(pages_text.keys()) < 26:
-            logger.error("Failed to get pages starting from 26")
+        if not pages_text:
+            logger.error("Failed to get pages starting from 22")
             return
-            
-        logger.info(f"Successfully extracted pages: {list(pages_text.keys())}")
 
-        # Log sample of first page
-        first_page_num = list(pages_text.keys())[0]
-        sample_text = pages_text[first_page_num]
-        logger.info(f"First page text sample: {sample_text[:200]}...")
+        logger.info(f"Successfully extracted pages: {list(pages_text.keys())}")
+        
+        # Log raw page content
+        logger.info("=== RAW PAGE CONTENT START ===")
+        for page_num in sorted(pages_text.keys()):
+            first_line = pages_text[page_num].split('\n')[0]
+            logger.debug(f"Page {page_num} | First line: {first_line}")
+        logger.info("=== RAW PAGE CONTENT END ===")
 
         # Process chunks
-        logger.info("Processing text into chunks...")
+        logger.info("=== CHUNKS PROCESSING START ===")
         chunker = ElectricalCodeChunker(openai_api_key=openai_key)
         chunks = chunker.chunk_nfpa70_content(pages_text)
         logger.info(f"Created {len(chunks)} chunks")
 
+        # Log chunk details
+        for i, chunk in enumerate(chunks):
+            first_line = chunk.content.split('\n')[0]
+            logger.debug(
+                f"Chunk {i} | "
+                f"Page: {chunk.page_number} | "
+                f"Article: {chunk.article_number} | "
+                f"Section: {chunk.section_number} | "
+                f"First line: {first_line}"
+            )
+            logger.debug(f"Chunk {i} | Page: {chunk.page_number} | Article: {chunk.article_number} | " 
+                         f"Section: {chunk.section_number} | First line: {first_line}")
+        logger.info("=== CHUNKS PROCESSING END ===")
+
         # Set up search index
-        logger.info(f"Setting up test index: {test_index_name}")
+        logger.info(f"=== SEARCH INDEX SETUP START ===")
         create_search_index(search_endpoint, search_key, test_index_name)
 
         # Initialize indexer
@@ -105,7 +121,7 @@ def test_single_chunk_processing():
             logger.warning("No chunks were created")
             return
 
-        # Process and index all chunks
+        # Process and index chunks
         chunk_dicts = [{
             "content": chunk.content,
             "page_number": chunk.page_number,
@@ -119,11 +135,13 @@ def test_single_chunk_processing():
         
         logger.info(f"Preparing to index {len(chunk_dicts)} chunks...")
         
-        # Index all chunks
+        # Index chunks
         indexer.index_documents(chunk_dicts)
         logger.info(f"Successfully indexed {len(chunk_dicts)} chunks")
+        logger.info("=== SEARCH INDEX SETUP END ===")
 
         # Verify indexing
+        logger.info("=== SEARCH VERIFICATION START ===")
         search_client = SearchClient(
             endpoint=search_endpoint,
             index_name=test_index_name,
@@ -145,7 +163,7 @@ def test_single_chunk_processing():
         logger.info("Waiting for index update...")
         time.sleep(3)
 
-        # Search for the indexed content
+        # Search for indexed content
         results = search_client.search(
             search_text=None,
             vector_queries=[vector_query],
@@ -155,15 +173,25 @@ def test_single_chunk_processing():
         results_list = list(results)
         logger.info(f"Found {len(results_list)} documents in test index")
 
+        # Log search results
         if results_list:
-            logger.debug("First result details:")
-            logger.debug(f"Content: {results_list[0].get('content')[:200]}...")
-            logger.debug(f"Article: {results_list[0].get('article_number')}")
-            logger.debug(f"Section: {results_list[0].get('section_number')}")
-            logger.debug(f"Page: {results_list[0].get('page_number')}")
+            logger.info("=== SEARCH RESULTS START ===")
+            for i, result in enumerate(results_list):
+                first_line = result.get('content', '').split('\n')[0]
+                logger.debug(
+                    f"Result {i} | "
+                    f"Page: {result.get('page_number')} | "
+                    f"Article: {result.get('article_number')} | "
+                    f"Section: {result.get('section_number')} | "
+                    f"First line: {first_line}"
+                )
+                logger.debug(f"Result {i} | Page: {result.get('page_number')} | Article: {result.get('article_number')} | "
+                             f"Section: {result.get('section_number')} | First line: {first_line}")
+            logger.info("=== SEARCH RESULTS END ===")
             logger.info("Test completed successfully!")
         else:
             logger.warning("No documents found in index after upload")
+        logger.info("=== SEARCH VERIFICATION END ===")
 
     except Exception as e:
         logger.error(f"Test failed: {str(e)}")

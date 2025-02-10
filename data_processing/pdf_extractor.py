@@ -3,12 +3,20 @@ import re
 from typing import Dict, Optional
 import logging
 from pathlib import Path
+import regex
 
 class PDFExtractor:
     """Enhanced PDF text extraction for electrical code documents."""
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+
+    def _find_page_number(self, text: str) -> Optional[int]:
+        """Extract NFPA page number from text."""
+        match = regex.search(r'70-(\d+)', text)
+        if match:
+            return int(match.group(1))
+        return None
 
     def extract_text_from_pdf(self, pdf_path: Path, max_pages: int = None) -> Dict[int, str]:
         """
@@ -35,8 +43,9 @@ class PDFExtractor:
                 
                 # Only store non-empty pages
                 if text.strip():
-                    # Store with page number (1-based)
-                    pages_text[page_num + 1] = text
+                    doc_page_num = self._find_page_number(text)
+                    if doc_page_num:
+                        pages_text[doc_page_num] = text
                 
             if not pages_text:
                 self.logger.warning("No text extracted from PDF")

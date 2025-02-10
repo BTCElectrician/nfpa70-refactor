@@ -60,8 +60,8 @@ class CodePosition:
 @dataclass
 class CodeChunk:
     """Represents a chunk of electrical code with essential metadata."""
-    content: str                     # The actual code text
-    page_number: int                 # Page number in document
+    content: str                     # The actual text content of the chunk
+    page_number: int                 # Now represents NFPA page number (70-XX)
     article_number: Optional[str]    # Article number (e.g., "90")
     section_number: Optional[str]    # Section number (e.g., "90.2")
     article_title: Optional[str]     # Title of the article
