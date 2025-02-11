@@ -7,6 +7,8 @@ from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type,
 import json
 from openai import AsyncOpenAI, APIError
 from contextlib import asynccontextmanager
+import aiohttp
+from aiohttp import TCPConnector
 
 @dataclass
 class CodePosition:
@@ -73,26 +75,23 @@ class CodeChunk:
 class ElectricalCodeChunker:
     """Chunks electrical code text with batched GPT-based cleanup and analysis."""
     
-    def __init__(self, 
-                 openai_api_key: Optional[str] = None,
-                 batch_size: int = 50,
-                 max_concurrent_requests: int = 5):
-        """
-        Initialize the chunker with configurable batch parameters.
-        
-        Args:
-            openai_api_key: API key for OpenAI
-            batch_size: Number of chunks to process in one batch
-            max_concurrent_requests: Maximum number of concurrent API requests
-        """
+    def __init__(
+        self,
+        openai_api_key: Optional[str] = None,
+        batch_size: int = 10,
+        max_concurrent_batches: int = 5
+    ):
+        """Initialize without creating session/connector (deferred until async context)."""
         self.logger = logger.bind(context="chunker")
-        self.client = AsyncOpenAI(
-            api_key=openai_api_key,
-            timeout=30.0,
-            max_retries=5
-        ) if openai_api_key else None
+        self.openai_api_key = openai_api_key
+        
+        # Defer creation until inside async context
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.client: Optional[AsyncOpenAI] = None
+        
         self.batch_size = batch_size
-        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
+        self.max_concurrent_batches = max_concurrent_batches
+        self.api_semaphore = asyncio.Semaphore(self.max_concurrent_batches * self.batch_size)
         
         # Define technical contexts for tagging
         self.context_mapping = {
@@ -118,10 +117,36 @@ class ElectricalCodeChunker:
             ]
         }
 
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self._ensure_session()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self.session:
+            await self.session.close()
+            self.session = None
+        if self.client:
+            await self.client.close()
+            self.client = None
+
+    def _ensure_session(self) -> None:
+        """Create session/client if not already created (called from async context)."""
+        if self.session is None:
+            connector = TCPConnector(limit=50, limit_per_host=10)
+            self.session = aiohttp.ClientSession(connector=connector)
+            if self.openai_api_key:
+                self.client = AsyncOpenAI(
+                    api_key=self.openai_api_key,
+                    timeout=30.0,
+                    max_retries=5
+                )
+
     @asynccontextmanager
-    async def _api_semaphore(self):
+    async def _api_limit_guard(self):
         """Context manager for API rate limiting."""
-        async with self.semaphore:
+        async with self.api_semaphore:
             yield
 
     async def _process_chunk_batch(self, chunks: Sequence[str]) -> List[Dict]:
@@ -136,7 +161,7 @@ class ElectricalCodeChunker:
                 retry=retry_if_exception_type((TimeoutError, APIError))
             ):
                 with attempt:
-                    async with self._api_semaphore():
+                    async with self._api_limit_guard():
                         response = await self.client.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=[{
@@ -157,33 +182,58 @@ class ElectricalCodeChunker:
                                 "role": "user", 
                                 "content": f"Process these NEC text chunks: {json.dumps(chunks)}"
                             }],
-                            timeout=45.0,  # Longer timeout for batch processing
+                            timeout=45.0,
                             temperature=0,
                             response_format={"type": "json_object"}
                         )
                         
-                        results = json.loads(response.choices[0].message.content)
-                        return results.get("chunks", [{} for _ in chunks])
+                        try:
+                            results = json.loads(response.choices[0].message.content)
+                            return results.get("chunks", [{} for _ in chunks])
+                        except json.JSONDecodeError:
+                            return [{} for _ in chunks]
                         
         except Exception as e:
             self.logger.error(f"Error in GPT batch processing: {str(e)}")
             return [{} for _ in chunks]
 
     async def process_chunks_async(self, chunks: List[str]) -> List[Dict]:
-        """Process all chunks with batching."""
+        """Process chunks with proper async session handling."""
+        # Ensure session exists before processing
+        self._ensure_session()
+        
+        self.logger.info(f"Starting parallel processing of {len(chunks)} chunks")
         results = []
+        
+        # Create sub-batches
+        sub_batches = []
         for i in range(0, len(chunks), self.batch_size):
-            batch = chunks[i:i + self.batch_size]
-            self.logger.info(f"Processing batch {i//self.batch_size + 1}, size: {len(batch)}")
+            batch_slice = chunks[i:i + self.batch_size]
+            sub_batches.append(batch_slice)
             
-            batch_results = await self._process_chunk_batch(batch)
-            results.extend(batch_results)
+        # Process in parallel with controlled concurrency
+        tasks = []
+        for batch_slice in sub_batches:
+            tasks.append(asyncio.create_task(self._process_chunk_batch(batch_slice)))
             
-            self.logger.debug(f"Completed batch {i//self.batch_size + 1}")
+        # Run batches with controlled concurrency
+        output_all = []
+        for i in range(0, len(tasks), self.max_concurrent_batches):
+            slice_of_tasks = tasks[i:i + self.max_concurrent_batches]
+            partial_results = await asyncio.gather(*slice_of_tasks)
+            output_all.extend(partial_results)
+            
+        # Flatten results
+        for partial_batch_result in output_all:
+            results.extend(partial_batch_result)
             
         return results
 
-    def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
+    async def close_session(self):
+        """Close the aiohttp session when done."""
+        await self.session.close()
+
+    async def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
         """Process NFPA 70 content into context-aware chunks."""
         chunks = []
         raw_chunks = []
@@ -215,9 +265,8 @@ class ElectricalCodeChunker:
         # Process chunks in batches asynchronously
         self.logger.info(f"Processing {len(raw_chunks)} chunks in batches of {self.batch_size}")
         
-        # Run async processing in event loop
-        loop = asyncio.get_event_loop()
-        chunk_analyses = loop.run_until_complete(self.process_chunks_async(raw_chunks))
+        # Process chunks asynchronously - Note: no more loop.run_until_complete
+        chunk_analyses = await self.process_chunks_async(raw_chunks)
         
         # Convert results to CodeChunk objects
         for i, analysis in enumerate(chunk_analyses):

@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
-import time
+import asyncio  # CHANGED: Replaced 'import time' with asyncio
 
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
@@ -46,7 +46,7 @@ def validate_environment():
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
 
-def test_single_chunk_processing():
+async def test_single_chunk_processing():  # CHANGED: Added async
     """Test the processing pipeline with enhanced logging."""
     try:
         setup_logging()
@@ -87,22 +87,22 @@ def test_single_chunk_processing():
 
         # Process chunks
         logger.info("=== CHUNKS PROCESSING START ===")
-        chunker = ElectricalCodeChunker(openai_api_key=openai_key)
-        chunks = chunker.chunk_nfpa70_content(pages_text)
-        logger.info(f"Created {len(chunks)} chunks")
+        async with ElectricalCodeChunker(openai_api_key=openai_key) as chunker:  # CHANGED: Added async context manager
+            chunks = await chunker.chunk_nfpa70_content(pages_text)
+            logger.info(f"Created {len(chunks)} chunks")
 
-        # Log chunk details
-        for i, chunk in enumerate(chunks):
-            first_line = chunk.content.split('\n')[0]
-            logger.debug(
-                f"Chunk {i} | "
-                f"Page: {chunk.page_number} | "
-                f"Article: {chunk.article_number} | "
-                f"Section: {chunk.section_number} | "
-                f"First line: {first_line}"
-            )
-            logger.debug(f"Chunk {i} | Page: {chunk.page_number} | Article: {chunk.article_number} | " 
-                         f"Section: {chunk.section_number} | First line: {first_line}")
+            # Log chunk details
+            for i, chunk in enumerate(chunks):
+                first_line = chunk.content.split('\n')[0]
+                logger.debug(
+                    f"Chunk {i} | "
+                    f"Page: {chunk.page_number} | "
+                    f"Article: {chunk.article_number} | "
+                    f"Section: {chunk.section_number} | "
+                    f"First line: {first_line}"
+                )
+                logger.debug(f"Chunk {i} | Page: {chunk.page_number} | Article: {chunk.article_number} | " 
+                             f"Section: {chunk.section_number} | First line: {first_line}")
         logger.info("=== CHUNKS PROCESSING END ===")
 
         # Set up search index
@@ -161,7 +161,7 @@ def test_single_chunk_processing():
 
         # Wait for index update
         logger.info("Waiting for index update...")
-        time.sleep(3)
+        await asyncio.sleep(3)  # CHANGED: Using asyncio.sleep instead of time.sleep
 
         # Search for indexed content
         results = search_client.search(
@@ -197,5 +197,16 @@ def test_single_chunk_processing():
         logger.error(f"Test failed: {str(e)}")
         raise
 
+async def main():  # CHANGED: Added main function
+    """Main entry point with proper async cleanup."""
+    try:
+        await test_single_chunk_processing()
+    finally:
+        pending = asyncio.all_tasks() - {asyncio.current_task()}
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
 if __name__ == "__main__":
-    test_single_chunk_processing()
+    asyncio.run(main())  # CHANGED: Using asyncio.run instead of direct function call
