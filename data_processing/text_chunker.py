@@ -7,8 +7,7 @@ from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type,
 import json
 from openai import AsyncOpenAI, APIError
 from contextlib import asynccontextmanager
-import aiohttp
-from aiohttp import TCPConnector
+import httpx
 
 @dataclass
 class CodePosition:
@@ -85,8 +84,8 @@ class ElectricalCodeChunker:
         self.logger = logger.bind(context="chunker")
         self.openai_api_key = openai_api_key
         
-        # Defer creation until inside async context
-        self.session: Optional[aiohttp.ClientSession] = None
+        # Initialize as None, will be set in async context
+        self.http_client: Optional[httpx.AsyncClient] = None
         self.client: Optional[AsyncOpenAI] = None
         
         self.batch_size = batch_size
@@ -118,30 +117,24 @@ class ElectricalCodeChunker:
         }
 
     async def __aenter__(self):
-        """Async context manager entry."""
-        self._ensure_session()
+        """Async context manager entry - initializes httpx client and OpenAI client."""
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+        if self.openai_api_key:
+            self.client = AsyncOpenAI(
+                api_key=self.openai_api_key,
+                http_client=self.http_client,
+                max_retries=5
+            )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit."""
-        if self.session:
-            await self.session.close()
-            self.session = None
+        """Async context manager exit - properly closes httpx client."""
+        if self.http_client:
+            await self.http_client.aclose()
+            self.http_client = None
         if self.client:
             await self.client.close()
             self.client = None
-
-    def _ensure_session(self) -> None:
-        """Create session/client if not already created (called from async context)."""
-        if self.session is None:
-            connector = TCPConnector(limit=50, limit_per_host=10)
-            self.session = aiohttp.ClientSession(connector=connector)
-            if self.openai_api_key:
-                self.client = AsyncOpenAI(
-                    api_key=self.openai_api_key,
-                    timeout=30.0,
-                    max_retries=5
-                )
 
     @asynccontextmanager
     async def _api_limit_guard(self):
@@ -199,9 +192,6 @@ class ElectricalCodeChunker:
 
     async def process_chunks_async(self, chunks: List[str]) -> List[Dict]:
         """Process chunks with proper async session handling."""
-        # Ensure session exists before processing
-        self._ensure_session()
-        
         self.logger.info(f"Starting parallel processing of {len(chunks)} chunks")
         results = []
         
@@ -228,10 +218,6 @@ class ElectricalCodeChunker:
             results.extend(partial_batch_result)
             
         return results
-
-    async def close_session(self):
-        """Close the aiohttp session when done."""
-        await self.session.close()
 
     async def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
         """Process NFPA 70 content into context-aware chunks."""
@@ -265,7 +251,7 @@ class ElectricalCodeChunker:
         # Process chunks in batches asynchronously
         self.logger.info(f"Processing {len(raw_chunks)} chunks in batches of {self.batch_size}")
         
-        # Process chunks asynchronously - Note: no more loop.run_until_complete
+        # Process chunks asynchronously
         chunk_analyses = await self.process_chunks_async(raw_chunks)
         
         # Convert results to CodeChunk objects
@@ -287,25 +273,25 @@ class ElectricalCodeChunker:
         self.logger.success(f"Successfully processed {len(chunks)} chunks")
         return chunks
 
-def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
+async def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
     """Wrapper for older code if needed."""
-    chunker = ElectricalCodeChunker(openai_api_key=openai_api_key)
-    pages_text = {1: text}
-    chunks = chunker.chunk_nfpa70_content(pages_text)
+    async with ElectricalCodeChunker(openai_api_key=openai_api_key) as chunker:
+        pages_text = {1: text}
+        chunks = await chunker.chunk_nfpa70_content(pages_text)
     
-    return [
-        {
-            "content": chunk.content,
-            "page_number": chunk.page_number,
-            "article_number": chunk.article_number,
-            "section_number": chunk.section_number,
-            "article_title": chunk.article_title or "",
-            "section_title": chunk.section_title or "",
-            "context_tags": chunk.context_tags,
-            "related_sections": chunk.related_sections,
-            "gpt_analysis": {},
-            "cleaned_text": chunk.content,
-            "ocr_confidence": 1.0
-        }
-        for chunk in chunks
-    ]
+        return [
+            {
+                "content": chunk.content,
+                "page_number": chunk.page_number,
+                "article_number": chunk.article_number,
+                "section_number": chunk.section_number,
+                "article_title": chunk.article_title or "",
+                "section_title": chunk.section_title or "",
+                "context_tags": chunk.context_tags,
+                "related_sections": chunk.related_sections,
+                "gpt_analysis": {},
+                "cleaned_text": chunk.content,
+                "ocr_confidence": 1.0
+            }
+            for chunk in chunks
+        ]

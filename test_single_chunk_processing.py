@@ -68,12 +68,19 @@ async def test_single_chunk_processing():  # CHANGED: Added async
         pages_text = {}
         
         full_text = extractor.extract_text_from_pdf(Path(pdf_path))
-        for page_num in range(22, 25):  # These are the 70-XX page numbers
+        # Process pages from beginning, middle, and end of the document
+        for page_num in range(22, 32):              # Beginning (10 pages)
+            if page_num in full_text:
+                pages_text[page_num] = full_text[page_num]
+        for page_num in range(150, 160):            # Middle (10 pages)
+            if page_num in full_text:
+                pages_text[page_num] = full_text[page_num]
+        for page_num in range(250, 260):            # End (10 pages)
             if page_num in full_text:
                 pages_text[page_num] = full_text[page_num]
         
         if not pages_text:
-            logger.error("Failed to get pages starting from 22")
+            logger.error("Failed to get pages")
             return
 
         logger.info(f"Successfully extracted pages: {list(pages_text.keys())}")
