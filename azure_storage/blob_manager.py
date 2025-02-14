@@ -11,9 +11,9 @@ class BlobStorageManager:
     Relies on the AzureWebJobsStorage connection string in environment variables.
     """
     def __init__(self, container_name: str = "processed-data", blob_name: str = "processed_data.json"):
-        self.connect_str = os.getenv('AzureWebJobsStorage')
+        self.connect_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
         if not self.connect_str:
-            raise ValueError("Missing AzureWebJobsStorage connection string in environment.")
+            raise ValueError("Missing AZURE_STORAGE_CONNECTION_STRING connection string in environment.")
 
         self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
         self.container_name = container_name

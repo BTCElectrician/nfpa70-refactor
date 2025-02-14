@@ -21,7 +21,7 @@ def main():
     openai_api_key = os.getenv('OPENAI_API_KEY')
     
     # Step 1: Load chunked data from Blob Storage
-    blob_manager = BlobStorageManager(container_name="processed-data", blob_name="nfpa70_chunks.json")
+    blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks", blob_name="nfpa70_chunks.json")
     blob_data = blob_manager.load_processed_data()
     chunks = blob_data.get("chunks", [])
 

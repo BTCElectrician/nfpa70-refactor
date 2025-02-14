@@ -18,12 +18,20 @@ class PDFExtractor:
             return int(match.group(1))
         return None
 
-    def extract_text_from_pdf(self, pdf_path: Path, max_pages: int = None) -> Dict[int, str]:
+    def extract_text_from_pdf(
+        self,
+        pdf_path: Path,
+        start_page: int = 1,
+        end_page: Optional[int] = None,
+        max_pages: Optional[int] = None
+    ) -> Dict[int, str]:
         """
-        Extract text from PDF with optional page limit for testing.
+        Extract text from PDF with optional page range and limit controls.
         
         Args:
             pdf_path: Path to PDF file
+            start_page: The first page to read (1-based index, default=1)
+            end_page: The last page to read (default=None, meaning read to end)
             max_pages: Optional maximum number of pages to process
         
         Returns:
@@ -34,10 +42,18 @@ class PDFExtractor:
             doc = pymupdf.open(pdf_path)
             pages_text = {}
             
-            total_pages = len(doc)
-            pages_to_process = min(max_pages, total_pages) if max_pages else total_pages
+            # Convert start_page to 0-based index
+            start_idx = start_page - 1
             
-            for page_num in range(pages_to_process):
+            # Calculate end page
+            total_pages = len(doc)
+            end_idx = min(end_page or total_pages, total_pages)
+            
+            # Apply max_pages limit if specified
+            if max_pages:
+                end_idx = min(start_idx + max_pages, end_idx)
+            
+            for page_num in range(start_idx, end_idx):
                 page = doc[page_num]
                 text = page.get_text("text")
                 
