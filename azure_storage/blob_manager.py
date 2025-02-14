@@ -13,50 +13,53 @@ class BlobStorageManager:
     def __init__(self, container_name: str = "processed-data", blob_name: str = "processed_data.json"):
         self.connect_str = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
         if not self.connect_str:
-            raise ValueError("Missing AZURE_STORAGE_CONNECTION_STRING connection string in environment.")
+            raise ValueError("AZURE_STORAGE_CONNECTION_STRING not found in environment")
 
-        self.blob_service_client = BlobServiceClient.from_connection_string(self.connect_str)
-        self.container_name = container_name
-        self.blob_name = blob_name
+        self.blob_service_client = BlobServiceClient.from_connection_string(
+            self.connect_str,
+            api_version="2025-01-05"  # Explicit service version [1][2]
+        )
+        self.container_client = self.blob_service_client.get_container_client(container_name)
+        self.blob_client = self.container_client.get_blob_client(blob_name)
 
-        # Ensure container exists (create if needed)
+        # Modern container creation with metadata
         try:
-            self.blob_service_client.create_container(self.container_name)
+            self.container_client.create_container(metadata={"purpose": "processed-data-storage"})
         except ResourceExistsError:
-            pass  # container already exists
+            pass
 
     def save_processed_data(self, data: dict) -> None:
-        """Save a Python dictionary to Blob Storage as JSON."""
+        """Save dictionary to blob storage with optimized upload"""
         try:
-            container_client = self.blob_service_client.get_container_client(self.container_name)
-            blob_client = container_client.get_blob_client(self.blob_name)
-
-            blob_client.upload_blob(
-                json.dumps(data),
+            json_data = json.dumps(data, ensure_ascii=False)
+            
+            self.blob_client.upload_blob(
+                data=json_data,
                 overwrite=True,
                 content_settings=ContentSettings(
-                    content_type='application/json',
-                    cache_control='no-cache'
-                )
+                    content_type='application/json; charset=utf-8',  # Explicit UTF-8
+                    cache_control='max-age=0, no-cache'
+                ),
+                standard_blob_tier="Hot"  # Explicit tier setting [1]
             )
-            logging.info(f"Data saved to blob: {self.blob_name}")
+            logging.info(f"Data committed to {self.blob_client.blob_name}")
 
         except Exception as e:
-            logging.error(f"Error saving data to blob: {str(e)}")
+            logging.error(f"Upload failed: {str(e)}")
             raise
 
     def load_processed_data(self) -> dict:
-        """Load data from Blob Storage and return as a Python dictionary."""
+        """Load data with modern download pattern"""
         try:
-            container_client = self.blob_service_client.get_container_client(self.container_name)
-            blob_client = container_client.get_blob_client(self.blob_name)
-
-            downloaded = blob_client.download_blob().readall()
-            return json.loads(downloaded)
+            download_stream = self.blob_client.download_blob(
+                max_concurrency=4,  # Parallel downloads [2]
+                validate_content=True  # CRC64 validation
+            )
+            return json.loads(download_stream.readall())
 
         except ResourceNotFoundError:
-            logging.warning(f"Blob {self.blob_name} not found in container {self.container_name}")
+            logging.warning(f"Blob {self.blob_client.blob_name} not found")
             return {}
-        except Exception as e:
-            logging.error(f"Error loading data from blob: {str(e)}")
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON: {str(e)}")
             return {}

@@ -39,9 +39,16 @@ def main():
         search_admin_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
         index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor')
         openai_api_key = os.getenv('OPENAI_API_KEY')
+        storage_connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
 
         # Validate required variables
-        required = [pdf_path, search_endpoint, search_admin_key, openai_api_key]
+        required = [
+            pdf_path,
+            search_endpoint,
+            search_admin_key,
+            openai_api_key,
+            storage_connection_string
+        ]
         if any(v is None or v.strip() == "" for v in required):
             raise ValueError("One or more required environment variables are missing.")
 
