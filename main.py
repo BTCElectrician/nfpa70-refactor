@@ -3,6 +3,7 @@ import logging
 import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
+import json
 
 from data_processing.pdf_extractor import PDFExtractor
 from data_processing.text_chunker import ElectricalCodeChunker
@@ -71,22 +72,45 @@ def main():
         logger.info("Converting chunk objects into dictionaries...")
         chunk_dicts = []
         for c in chunks:
-            chunk_dicts.append({
+            # Debug log the chunk attributes
+            logger.debug(f"Processing chunk with attributes:")
+            logger.debug(f"  content type: {type(c.content)}")
+            logger.debug(f"  page_number type: {type(c.page_number)}")
+            logger.debug(f"  article_number type: {type(c.article_number)}")
+            logger.debug(f"  context_tags type: {type(c.context_tags)}")
+            
+            chunk_dict = {
                 "content": c.content,
                 "page_number": c.page_number,
                 "article_number": c.article_number,
                 "section_number": c.section_number,
                 "article_title": c.article_title or "",
                 "section_title": c.section_title or "",
-                "context_tags": c.context_tags,
-                "related_sections": c.related_sections
-            })
+                "context_tags": list(c.context_tags) if c.context_tags else [],
+                "related_sections": list(c.related_sections) if c.related_sections else []
+            }
+            chunk_dicts.append(chunk_dict)
+
+        # Debug: Log the first chunk dict
+        if chunk_dicts:
+            logger.debug("First chunk dictionary structure:")
+            logger.debug(json.dumps(chunk_dicts[0], indent=2, default=str))
 
         # Step 4: Save processed chunks to blob storage
         try:
+            data_to_save = {"chunks": chunk_dicts}
+            # Debug: Try to serialize before sending to blob storage
+            try:
+                json.dumps(data_to_save, default=str)
+                logger.debug("Data successfully serialized to JSON")
+            except Exception as json_error:
+                logger.error(f"JSON serialization test failed: {json_error}")
+                raise
+
             blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks", blob_name="nfpa70_chunks.json")
-            blob_manager.save_processed_data({"chunks": chunk_dicts})
+            blob_manager.save_processed_data(data_to_save)
             logger.info("Saved chunked data to blob storage for later indexing.")
+
         except Exception as e:
             logger.warning(f"Failed to save chunks to blob storage: {e}")
 

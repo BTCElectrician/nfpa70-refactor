@@ -18,7 +18,7 @@ class DataIndexer:
             credential=AzureKeyCredential(admin_key)
         )
         self.openai_client = OpenAI(api_key=openai_api_key)
-        self.logger = logger
+        self.logger = logger.bind(context="indexer")
 
     def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
         """Generate embeddings for text using OpenAI's API."""
@@ -39,7 +39,8 @@ class DataIndexer:
             return embedding
             
         except Exception as e:
-            self.logger.error(f"Error generating embeddings: {str(e)}")
+            self.logger.error(f"Error generating embeddings: Type: {type(e)}, Error: {str(e)}")
+            self.logger.debug(f"Exception attributes: {dir(e)}")
             raise
 
     def generate_embeddings_batch(self, texts: List[str], model: str = "text-embedding-3-small") -> List[List[float]]:
@@ -65,7 +66,8 @@ class DataIndexer:
             self.logger.debug("[generate_embeddings_batch] Successfully generated batch embeddings")
             return embeddings
         except Exception as e:
-            self.logger.error(f"Error generating batch embeddings: {str(e)}")
+            self.logger.error(f"Batch embedding error: Type: {type(e)}, Error: {str(e)}")
+            self.logger.debug(f"Exception attributes: {dir(e)}")
             raise
 
     def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
@@ -180,7 +182,8 @@ class DataIndexer:
                             self.logger.info(f"Successfully indexed batch of {len(results)} documents")
                             documents_to_upload = []
                         except Exception as e:
-                            self.logger.error(f"Error uploading batch: {str(e)}")
+                            self.logger.error(f"Batch upload error: Type: {type(e)}, Error: {str(e)}")
+                            self.logger.debug(f"Exception attributes: {dir(e)}")
                             raise
 
             # Upload any remaining documents
@@ -190,9 +193,11 @@ class DataIndexer:
                     results = self.search_client.upload_documents(documents=documents_to_upload)
                     self.logger.info(f"Successfully indexed final batch of {len(results)} documents")
                 except Exception as e:
-                    self.logger.error(f"Error uploading final batch: {str(e)}")
+                    self.logger.error(f"Batch upload error: Type: {type(e)}, Error: {str(e)}")
+                    self.logger.debug(f"Exception attributes: {dir(e)}")
                     raise
 
         except Exception as e:
-            self.logger.error(f"Error in indexing process: {str(e)}")
+            self.logger.error(f"Fatal indexing error: Type: {type(e)}, Error: {str(e)}")
+            self.logger.debug(f"Exception attributes: {dir(e)}")
             raise
