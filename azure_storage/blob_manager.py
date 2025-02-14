@@ -58,12 +58,27 @@ class BlobStorageManager:
     def _ensure_container_exists(self) -> None:
         """Create the container if it doesn't exist."""
         try:
+            logging.debug(
+                f"Attempting to create container: {self.container_client.container_name}"
+            )
             self.container_client.create_container(
                 metadata={"purpose": "processed-data-storage"}
             )
             logging.info(f"Container {self.container_client.container_name} created")
         except ResourceExistsError:
-            logging.debug(f"Container {self.container_client.container_name} already exists")
+            logging.debug(
+                f"Container {self.container_client.container_name} already exists"
+            )
+        except HttpResponseError as e:
+            logging.error(
+                f"HTTP error creating container: {e.status_code} - {e.message}"
+            )
+            raise
+        except Exception as ex:
+            logging.error(
+                f"Unexpected error creating container: {type(ex)} - {ex}"
+            )
+            raise
 
     def save_processed_data(self, data: Dict) -> None:
         """Save a Python dictionary to blob storage as JSON.
@@ -79,6 +94,10 @@ class BlobStorageManager:
         try:
             json_data = json.dumps(data, ensure_ascii=False, indent=2)
             
+            logging.debug(
+                f"Uploading JSON data to blob '{self.blob_client.blob_name}' "
+                f"in container '{self.container_client.container_name}'"
+            )
             self.blob_client.upload_blob(
                 data=json_data,
                 overwrite=True,
@@ -93,7 +112,7 @@ class BlobStorageManager:
 
         except HttpResponseError as http_err:
             logging.error(
-                f"HTTP error uploading data: {http_err.status_code} - {http_err.reason}"
+                f"HTTP error uploading data: {http_err.status_code} - {http_err.message}"
             )
             raise
         except ResourceExistsError as exists_err:
@@ -115,6 +134,10 @@ class BlobStorageManager:
             Returns empty dict on error to allow for graceful handling of missing data
         """
         try:
+            logging.debug(
+                f"Attempting to download blob '{self.blob_client.blob_name}' "
+                f"from container '{self.container_client.container_name}'"
+            )
             download_stream = self.blob_client.download_blob(
                 max_concurrency=4,
                 validate_content=True
@@ -129,4 +152,12 @@ class BlobStorageManager:
             
         except json.JSONDecodeError as e:
             logging.error(f"Failed to decode JSON data: {str(e)}")
+            return {}
+        except HttpResponseError as http_err:
+            logging.error(
+                f"HTTP error downloading data: {http_err.status_code} - {http_err.message}"
+            )
+            return {}
+        except Exception as ex:
+            logging.error(f"Unexpected error loading data: {type(ex)} - {ex}")
             return {}
