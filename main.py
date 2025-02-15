@@ -25,6 +25,36 @@ async def async_chunk_content(pages_text, openai_api_key):
         chunks = await chunker.chunk_nfpa70_content(pages_text)
     return chunks
 
+def get_next_page_range(processed_pages_file: str = "processed_pages.txt") -> tuple[int, int]:
+    """
+    Get the next 50-page range to process, tracking already processed pages.
+    Starting from page 26 (first content page) to 868 (last content page).
+    """
+    try:
+        with open(processed_pages_file, 'r') as f:
+            processed_ranges = f.read().strip().split('\n')
+            processed_pages = set()
+            for range_str in processed_ranges:
+                if range_str:
+                    start, end = map(int, range_str.split('-'))
+                    processed_pages.update(range(start, end + 1))
+    except FileNotFoundError:
+        processed_pages = set()
+
+    # Find next available 50-page range
+    start_page = 26  # First content page
+    while start_page <= 868:  # Last content page
+        end_page = min(start_page + 49, 868)  # 50 pages or until end
+        page_range = set(range(start_page, end_page + 1))
+        if not page_range.intersection(processed_pages):
+            # Save this range as processed
+            with open(processed_pages_file, 'a') as f:
+                f.write(f"{start_page}-{end_page}\n")
+            return start_page, end_page
+        start_page += 50
+
+    raise ValueError("All pages have been processed")
+
 def main():
     """
     Extracts PDF text, chunks it (including GPT analysis if openai_api_key is set),
@@ -55,13 +85,25 @@ def main():
 
         # Step 1: Extract PDF text
         extractor = PDFExtractor()
-        pages_text = extractor.extract_text_from_pdf(
-            pdf_path=Path(pdf_path),
-            start_page=26,    # skip everything before page 26
-            end_page=868,     # skip everything after page 868
-            max_pages=5       # test with 5 pages
-        )
-        logger.info(f"Extracted text from {len(pages_text)} pages.")
+        try:
+            start_page, end_page = get_next_page_range()
+            logger.info(f"Processing pages {start_page} to {end_page}")
+            
+            pages_text = extractor.extract_text_from_pdf(
+                pdf_path=Path(pdf_path),
+                start_page=start_page,
+                end_page=end_page,
+                max_pages=50  # Process 50 pages
+            )
+            
+            logger.info(f"Extracted text from {len(pages_text)} pages ({start_page}-{end_page})")
+            
+        except ValueError as e:
+            if str(e) == "All pages have been processed":
+                logger.info("All page ranges have been processed. Ready for indexing.")
+                return  # Exit the function as all pages are processed
+            else:
+                raise
 
         # Step 2: Run asynchronous chunking
         logger.info("Starting GPT-based chunking of the text...")
