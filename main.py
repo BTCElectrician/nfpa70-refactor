@@ -25,41 +25,110 @@ async def async_chunk_content(pages_text, openai_api_key):
         chunks = await chunker.chunk_nfpa70_content(pages_text)
     return chunks
 
-def get_next_page_range(processed_pages_file: str = "processed_pages.txt") -> tuple[int, int]:
+def get_page_sections() -> list[tuple[int, int]]:
     """
-    Get the next 50-page range to process, tracking already processed pages.
-    Starting from page 26 (first content page) to 868 (last content page).
+    Generate 50-page sections from start to last text-content page (775).
+    Returns list of (start_page, end_page) tuples.
+    Stops at page 775 to avoid processing table-only sections.
     """
-    try:
-        with open(processed_pages_file, 'r') as f:
-            processed_ranges = f.read().strip().split('\n')
-            processed_pages = set()
-            for range_str in processed_ranges:
-                if range_str:
-                    start, end = map(int, range_str.split('-'))
-                    processed_pages.update(range(start, end + 1))
-    except FileNotFoundError:
-        processed_pages = set()
-
-    # Find next available 50-page range
+    sections = []
     start_page = 26  # First content page
-    while start_page <= 868:  # Last content page
-        end_page = min(start_page + 49, 868)  # 50 pages or until end
-        page_range = set(range(start_page, end_page + 1))
-        if not page_range.intersection(processed_pages):
-            # Save this range as processed
-            with open(processed_pages_file, 'a') as f:
-                f.write(f"{start_page}-{end_page}\n")
-            return start_page, end_page
-        start_page += 50
+    while start_page <= 775:  # Last text content page (before tables)
+        end_page = min(start_page + 49, 775)  # 50 pages or until end of text
+        sections.append((start_page, end_page))
+        start_page = end_page + 1
+    return sections
 
-    raise ValueError("All pages have been processed")
-
-def main():
+async def process_section(
+    extractor: PDFExtractor,
+    pdf_path: str | Path,
+    start_page: int,
+    end_page: int,
+    openai_api_key: str,
+    blob_manager: BlobStorageManager
+) -> None:
     """
-    Extracts PDF text, chunks it (including GPT analysis if openai_api_key is set),
-    and saves the chunks to blob storage. Optionally creates/updates the search
-    index schema. Does NOT actually index documents (see index_from_blob.py).
+    Process a single section of the document and save to its own blob file.
+    
+    Args:
+        extractor: PDFExtractor instance
+        pdf_path: Path to PDF file
+        start_page: Starting page number
+        end_page: Ending page number
+        openai_api_key: OpenAI API key
+        blob_manager: BlobStorageManager instance
+    """
+    logger.info(f"Processing pages {start_page} to {end_page}")
+    
+    # Extract text from PDF
+    pages_text = extractor.extract_text_from_pdf(
+        pdf_path=Path(pdf_path),
+        start_page=start_page,
+        end_page=end_page,
+        max_pages=50  # Maintain your existing setting
+    )
+    logger.info(f"Extracted text from {len(pages_text)} pages ({start_page}-{end_page})")
+    
+    # Process chunks
+    logger.info("Starting GPT-based chunking of the text...")
+    chunks = await async_chunk_content(pages_text, openai_api_key)
+    logger.info(f"Created {len(chunks)} text chunks.")
+    
+    # Convert chunk objects into dictionaries
+    logger.info("Converting chunk objects into dictionaries...")
+    chunk_dicts = []
+    for c in chunks:
+        # Debug log the chunk attributes
+        logger.debug(f"Processing chunk with attributes:")
+        logger.debug(f"  content type: {type(c.content)}")
+        logger.debug(f"  page_number type: {type(c.page_number)}")
+        logger.debug(f"  article_number type: {type(c.article_number)}")
+        logger.debug(f"  context_tags type: {type(c.context_tags)}")
+        
+        chunk_dict = {
+            "content": c.content,
+            "page_number": c.page_number,
+            "article_number": c.article_number,
+            "section_number": c.section_number,
+            "article_title": c.article_title or "",
+            "section_title": c.section_title or "",
+            "context_tags": list(c.context_tags) if c.context_tags else [],
+            "related_sections": list(c.related_sections) if c.related_sections else []
+        }
+        chunk_dicts.append(chunk_dict)
+
+    # Debug: Log the first chunk dict
+    if chunk_dicts:
+        logger.debug("First chunk dictionary structure:")
+        logger.debug(json.dumps(chunk_dicts[0], indent=2, default=str))
+    
+    # Save this section's chunks to its own blob file
+    try:
+        data_to_save = {"chunks": chunk_dicts}
+        # Debug: Try to serialize before sending to blob storage
+        try:
+            json.dumps(data_to_save, default=str)
+            logger.debug("Data successfully serialized to JSON")
+        except Exception as json_error:
+            logger.error(f"JSON serialization test failed: {json_error}")
+            raise
+
+        # Create a new blob manager for this section
+        blob_name = f"nfpa70_chunks_{start_page:03d}_{end_page:03d}.json"
+        section_blob_manager = BlobStorageManager(
+            container_name="nfpa70-pdf-chunks",
+            blob_name=blob_name
+        )
+        section_blob_manager.save_processed_data(data_to_save)
+        logger.info(f"Saved {len(chunk_dicts)} chunks from pages {start_page}-{end_page} to {blob_name}")
+
+    except Exception as e:
+        logger.error(f"Failed to save chunks for pages {start_page}-{end_page} to blob storage: {e}")
+        raise
+
+async def main():
+    """
+    Process entire NFPA 70 document, saving each section to its own blob file.
     """
     try:
         load_dotenv()
@@ -83,88 +152,39 @@ def main():
         if any(v is None or v.strip() == "" for v in required):
             raise ValueError("One or more required environment variables are missing.")
 
-        # Step 1: Extract PDF text
+        # Initialize services
         extractor = PDFExtractor()
-        try:
-            start_page, end_page = get_next_page_range()
-            logger.info(f"Processing pages {start_page} to {end_page}")
-            
-            pages_text = extractor.extract_text_from_pdf(
-                pdf_path=Path(pdf_path),
-                start_page=start_page,
-                end_page=end_page,
-                max_pages=50  # Process 50 pages
-            )
-            
-            logger.info(f"Extracted text from {len(pages_text)} pages ({start_page}-{end_page})")
-            
-        except ValueError as e:
-            if str(e) == "All pages have been processed":
-                logger.info("All page ranges have been processed. Ready for indexing.")
-                return  # Exit the function as all pages are processed
-            else:
-                raise
-
-        # Step 2: Run asynchronous chunking
-        logger.info("Starting GPT-based chunking of the text...")
-        chunks = asyncio.run(async_chunk_content(pages_text, openai_api_key))
-        logger.info(f"Created {len(chunks)} text chunks.")
-
-        # Step 3: Convert chunk objects into dictionaries with top-level fields
-        logger.info("Converting chunk objects into dictionaries...")
-        chunk_dicts = []
-        for c in chunks:
-            # Debug log the chunk attributes
-            logger.debug(f"Processing chunk with attributes:")
-            logger.debug(f"  content type: {type(c.content)}")
-            logger.debug(f"  page_number type: {type(c.page_number)}")
-            logger.debug(f"  article_number type: {type(c.article_number)}")
-            logger.debug(f"  context_tags type: {type(c.context_tags)}")
-            
-            chunk_dict = {
-                "content": c.content,
-                "page_number": c.page_number,
-                "article_number": c.article_number,
-                "section_number": c.section_number,
-                "article_title": c.article_title or "",
-                "section_title": c.section_title or "",
-                "context_tags": list(c.context_tags) if c.context_tags else [],
-                "related_sections": list(c.related_sections) if c.related_sections else []
-            }
-            chunk_dicts.append(chunk_dict)
-
-        # Debug: Log the first chunk dict
-        if chunk_dicts:
-            logger.debug("First chunk dictionary structure:")
-            logger.debug(json.dumps(chunk_dicts[0], indent=2, default=str))
-
-        # Step 4: Save processed chunks to blob storage
-        try:
-            data_to_save = {"chunks": chunk_dicts}
-            # Debug: Try to serialize before sending to blob storage
+        blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks")
+        
+        # Get all page sections to process
+        sections = get_page_sections()
+        logger.info(f"Starting processing of {len(sections)} sections")
+        
+        # Process each section
+        for start_page, end_page in sections:
             try:
-                json.dumps(data_to_save, default=str)
-                logger.debug("Data successfully serialized to JSON")
-            except Exception as json_error:
-                logger.error(f"JSON serialization test failed: {json_error}")
+                await process_section(
+                    extractor=extractor,
+                    pdf_path=pdf_path,
+                    start_page=start_page,
+                    end_page=end_page,
+                    openai_api_key=openai_api_key,
+                    blob_manager=blob_manager
+                )
+            except Exception as e:
+                logger.error(f"Error processing section {start_page}-{end_page}: {str(e)}")
                 raise
 
-            blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks", blob_name="nfpa70_chunks.json")
-            blob_manager.save_processed_data(data_to_save)
-            logger.info("Saved chunked data to blob storage for later indexing.")
-
-        except Exception as e:
-            logger.warning(f"Failed to save chunks to blob storage: {e}")
-
-        # Optional: Create or update the search index (schema only, no docs indexed here).
+        # Create or update the search index schema
         create_search_index(search_endpoint, search_admin_key, index_name)
         logger.info(f"Search index '{index_name}' created/updated successfully.")
 
-        logger.info("Main process completed successfully. To index the data, run 'index_from_blob.py'.")
+        logger.info("Full document processing completed successfully")
+        logger.info("To index the data, run 'index_from_blob.py'.")
 
     except Exception as e:
         logger.error(f"Error in main process: {str(e)}")
         raise
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

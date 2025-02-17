@@ -28,10 +28,32 @@ class BlobStorageManager:
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         
+        # Store the container name
+        self.container_name = container_name
+        self.blob_name = blob_name
+        
         # Initialize components
         self._initialize_connection()
         self._setup_clients(container_name, blob_name)
         self._ensure_container_exists()
+
+    @property
+    def blob_name(self) -> str:
+        """Get the current blob name."""
+        return self._blob_name
+
+    @blob_name.setter
+    def blob_name(self, value: str) -> None:
+        """
+        Set a new blob name and reinitialize the blob client.
+        
+        Args:
+            value: New blob name to use
+        """
+        self._blob_name = value
+        if hasattr(self, 'container_client'):
+            self.blob_client = self.container_client.get_blob_client(value)
+            self.logger.debug(f"Updated blob client to use blob: {value}")
 
     def _log_exception(self, e: Exception, context: str) -> None:
         """Helper to consistently log exception details."""
@@ -100,7 +122,8 @@ class BlobStorageManager:
             raise
 
     def _convert_to_serializable(self, obj: Any) -> Any:
-        """Convert objects to JSON-serializable format with error handling.
+        """
+        Convert objects to JSON-serializable format with error handling.
         
         Handles various object types including Pydantic models, custom objects,
         and Azure SDK specific types.
