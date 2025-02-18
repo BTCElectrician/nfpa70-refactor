@@ -8,7 +8,7 @@ from data_processing.definitions_chunker import DefinitionsChunker
 from data_processing.pdf_extractor import PDFExtractor
 from azure_storage.blob_manager import BlobStorageManager
 from azure_search.definitions_index import create_definitions_index
-from azure_search.data_indexer import DataIndexer
+from azure_search.definitions_indexer import DefinitionsIndexer  # Changed import
 
 async def process_definitions():
     """Process Article 100 definitions using specialized definitions chunker."""
@@ -64,32 +64,17 @@ async def process_definitions():
             logger.info(f"Saving {len(definitions)} definitions to blob storage...")
             blob_manager.save_processed_data(definitions_data)
             
-            # Index the definitions
+            # Index the definitions using specialized indexer
             logger.info("Indexing definitions...")
-            indexer = DataIndexer(
+            indexer = DefinitionsIndexer(  # Changed to DefinitionsIndexer
                 service_endpoint=search_endpoint,
                 admin_key=search_admin_key,
                 index_name=definitions_index_name,
                 openai_api_key=openai_key
             )
             
-            # Prepare documents for indexing with proper vector fields
-            index_docs = []
-            for i, d in enumerate(definitions):
-                doc = {
-                    "id": f"def_{i}",
-                    "term": d.term,
-                    "definition": d.definition,
-                    "page_number": d.page_number,
-                    "context": d.context or "",
-                    "cross_references": d.cross_references,
-                    "info_notes": d.info_notes,
-                    "committee_refs": d.committee_refs,
-                    "section_refs": d.section_refs
-                }
-                index_docs.append(doc)
-            
-            indexer.index_documents(index_docs)
+            # Index the definitions directly using the specialized indexer
+            indexer.index_definitions(definitions_data["definitions"])  # Changed to use index_definitions method
             
         logger.info(f"Successfully processed {len(definitions)} definitions")
         
