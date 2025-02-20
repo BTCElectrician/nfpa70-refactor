@@ -33,3 +33,20 @@ upgrade.md
 .DS_Store
 .DS_Store
 .DS_Store
+
+# Python egg metadata
+*.egg-info/
+*.egg
+*.egg-info
+
+# Python distribution / packaging
+dist/
+build/
+*.so
+
+# IDE specific files
+*.swp
+*.swo
+
+# Operating System
+Thumbs.db
