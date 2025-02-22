@@ -81,23 +81,60 @@ class ElectricalCodeChunker:
                         model="gpt-4o-mini",
                         messages=[{
                             "role": "system",
-                            "content": """Process this NFPA 70 page into properly structured chunks:
-                            1. Clean ALL OCR errors (e.g., "GEJ'ERAL" → "GENERAL", "ELECfRIC..AL" → "ELECTRICAL")
-                            2. Extract and structure each complete section with:
-                               - Full section content including subsections
-                               - Article number (e.g., "110")
-                               - Section number (e.g., "110.3" or "110.3(A)")
-                               - Article title
-                               - Section title
-                            3. Important requirements:
-                               - Keep sections together with their subsections
-                               - Include ALL content (notes, exceptions, etc.)
-                               - Add relevant context_tags
-                               - Add related_sections references
-                               - Handle subsections correctly (e.g., "(A)", "(B)")
-                               - Reject measurements as sections (e.g., "1.2 m" stays in parent section)
-                            4. Return as JSON array of chunks with consistent structure
-                            """
+                            "content": """You are a precise NFPA 70 electrical code document processor. Your task is to extract and structure EVERY piece of content from each page, ensuring nothing is missed. Follow these exact requirements:
+
+1. CONTENT COMPLETENESS
+- Extract and structure 100% of the page content - no exceptions
+- Include ALL informational notes, exceptions, tables, and footnotes
+- Capture every subsection, no matter how minor
+- Never truncate or summarize content
+- Cross-reference adjacent pages when content continues
+
+2. SECTION STRUCTURE
+- Main sections follow pattern "110.XX"
+- Subsections use patterns like "110.XX(A)", "110.XX(A)(1)", etc.
+- Each chunk must have:
+  * Full section content including ALL subsections
+  * Article number (e.g., "110")
+  * Section number (e.g., "110.3" or "110.3(A)")
+  * Article title
+  * Section title
+  * All informational notes
+  * All exceptions
+  * All measurement units and values
+  * All context tags (e.g., ["electrical_safety", "installation_requirements"])
+  * All related sections referenced in the content
+
+3. OCR CLEANING
+- Fix ALL OCR errors aggressively
+- Common replacements:
+  * "GEJ'ERAL" → "GENERAL"
+  * "ELECfRIC..AL" → "ELECTRICAL"
+  * "REQUIREIEKfS" → "REQUIREMENTS"
+  * "1:"/STALLATIO:"'S" → "INSTALLATIONS"
+  * "IEJ'\TS" → "MENTS"
+- Look for and fix similar patterns
+- Ensure measurements and units are correctly formatted
+- Maintain correct technical terminology
+
+4. CROSS-PAGE HANDLING
+- If content continues from previous page:
+  * Note it in the chunk's content
+  * Include full section number and title
+  * Mark as continuation in metadata
+- If content continues to next page:
+  * Include everything up to page break
+  * Note continuation status
+  * Keep section structure intact
+
+5. VALIDATION RULES
+- Every chunk must have non-empty content
+- Content must be a single string, not a list
+- Section numbers must be valid format
+- All required metadata fields must be present
+- Any continuation chunks must be properly linked
+
+Return a JSON array of chunks, each with complete and accurate section information. Be exhaustive and precise - we are paying for this API call and need to capture EVERYTHING in a clean, structured format."""
                         }, {
                             "role": "user",
                             "content": f"Process this page (PDF page {pdf_page_num}, NFPA page 70-{pdf_page_num-3}):\n\n{text}"

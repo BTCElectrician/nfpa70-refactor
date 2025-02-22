@@ -15,20 +15,39 @@ sys.path.append(project_root)
 from data_processing.pdf_extractor import PDFExtractor
 from data_processing.text_chunker import ElectricalCodeChunker
 from azure_storage.blob_manager import BlobStorageManager
-from data_processing.models import ChunkBatch  # Add this import
+from data_processing.models import ChunkBatch
 
 # Configure loguru
 logger.remove()
 logger.add(sys.stderr, level="DEBUG", format="{time} - {name} - {level} - {message}")
 
-# Initialize OpenAI client
+# Initialize OpenAI client with enhanced HTTPX configuration
 def get_openai_client(api_key: str) -> AsyncOpenAI:
+    # Enhanced timeout configuration
+    timeout = httpx.Timeout(
+        connect=10.0,    # Connection timeout
+        read=60.0,       # Read timeout
+        write=60.0,      # Write timeout
+        pool=60.0        # Pool timeout
+    )
+    
+    # Enhanced connection limits
+    limits = httpx.Limits(
+        max_connections=100,              # Increased for better concurrency
+        max_keepalive_connections=20,     # Optimal keepalive connections
+        keepalive_expiry=30.0            # Connection expiry time
+    )
+    
+    # Create HTTP client with enhanced configuration
+    http_client = httpx.AsyncClient(
+        timeout=timeout,
+        limits=limits,
+        http2=True  # Enable HTTP/2 for better performance
+    )
+    
     return AsyncOpenAI(
         api_key=api_key,
-        http_client=httpx.AsyncClient(
-            timeout=httpx.Timeout(60.0),
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5)
-        ),
+        http_client=http_client,
         max_retries=5
     )
 
@@ -62,7 +81,7 @@ async def reprocess_section() -> None:
 
         logger.info("Processing pages with hybrid chunking...")
         async with ElectricalCodeChunker(openai_api_key=openai_api_key) as chunker:
-            total_chunks = len(pages_text) * 10
+            total_chunks = len(pages_text) * 10  # Estimate 10 chunks per page
             chunks = []
             with tqdm(total=total_chunks, desc="Processing chunks", file=sys.stderr) as pbar:
                 for pdf_page_num, text in sorted(pages_text.items()):
