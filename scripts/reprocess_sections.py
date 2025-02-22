@@ -52,7 +52,7 @@ def get_openai_client(api_key: str) -> AsyncOpenAI:
     )
 
 async def reprocess_section() -> None:
-    """Reprocess PDF pages 66-75 with hybrid chunking, aligning to NFPA page numbers."""
+    """Reprocess PDF pages 66-75 with single-batch processing."""
     try:
         load_dotenv()
         pdf_path = os.getenv('PDF_PATH')
@@ -63,9 +63,11 @@ async def reprocess_section() -> None:
 
         extractor = PDFExtractor()
         client = get_openai_client(openai_api_key)
-        
+
+        # Keep existing page range for testing
         start_page = 66  # PDF page
         end_page = 75    # PDF page
+        
         logger.info(f"Extracting PDF pages {start_page} to {end_page}...")
         pages_text = extractor.extract_text_from_pdf(
             pdf_path=Path(pdf_path),
@@ -75,34 +77,34 @@ async def reprocess_section() -> None:
         )
         
         logger.info(f"Extracted {len(pages_text)} pages with PDF numbers: {list(pages_text.keys())}")
-        for pdf_page_num, text in sorted(pages_text.items()):
-            logger.info(f"PDF page {pdf_page_num} extracted")
-            logger.debug(f"PDF page {pdf_page_num} content: {text[:100]}...")
-
-        logger.info("Processing pages with hybrid chunking...")
+        
+        # Process all pages in one batch
         async with ElectricalCodeChunker(openai_api_key=openai_api_key) as chunker:
-            total_chunks = len(pages_text) * 10  # Estimate 10 chunks per page
+            # Estimate chunks based on content density
+            estimated_chunks = len(pages_text) * 5  # Average 5 sections per page
             chunks = []
-            with tqdm(total=total_chunks, desc="Processing chunks", file=sys.stderr) as pbar:
-                for pdf_page_num, text in sorted(pages_text.items()):
-                    page_chunks = await chunker.chunk_nfpa70_content({pdf_page_num: text})
-                    chunks.extend(page_chunks)
-                    logger.debug(f"Processed {len(page_chunks)} chunks for PDF page {pdf_page_num}")
-                    pbar.update(len(page_chunks))
             
-            # Log chunks with NFPA page numbers
-            for i, chunk in enumerate(chunks):
-                logger.debug(f"Chunk {i}: Page {chunk.page_number}, Article {chunk.article_number}, Section {chunk.section_number}")
-                logger.debug(f"  Content: {chunk.content[:100]}...")
-            logger.info(f"Created {len(chunks)} chunks")
+            with tqdm(total=estimated_chunks, desc="Processing chunks", file=sys.stderr) as pbar:
+                # Process entire batch at once
+                batch_chunks = await chunker.chunk_nfpa70_content(pages_text)
+                chunks.extend(batch_chunks)
+                pbar.update(len(batch_chunks))
+                logger.debug(f"Processed {len(batch_chunks)} chunks in batch")
 
-            # Create a ChunkBatch for storage
+            # Log chunks with NFPA page numbers for verification
+            for i, chunk in enumerate(chunks):
+                logger.debug(f"Chunk {i}: Page {chunk.page_number}, "
+                           f"Article {chunk.article_number}, Section {chunk.section_number}")
+                logger.debug(f"  Content: {chunk.content[:100]}...")
+
+            # Create batch for storage
             batch = ChunkBatch(chunks=chunks)
             
-            # Use NFPA range for blob name
+            # Use NFPA range for blob name (PDF page - 3)
             start_nfpa = start_page - 3
             end_nfpa = end_page - 3
             blob_name = f"nfpa70_chunks_{start_nfpa:03d}_{end_nfpa:03d}.json"
+            
             blob_manager = BlobStorageManager(
                 container_name="nfpa70-pdf-chunks",
                 blob_name=blob_name
