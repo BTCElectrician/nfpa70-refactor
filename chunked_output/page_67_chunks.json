@@ -1,0 +1,174 @@
+{
+  "chunks": [
+    {
+      "article_number": "110",
+      "section_number": "110.4",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Voltages",
+      "content": "The voltage considered shall be that at which the circuit operates. The voltage rating of electrical equipment shall not be less than the nominal voltage of a circuit to which it is connected.",
+      "context_tags": [
+        "voltage",
+        "electrical equipment"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.5",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Conductors",
+      "content": "Conductors used to carry current shall be of copper, aluminum, or copper-clad aluminum unless otherwise provided in this Code. If the conductor material is not specified, the sizes given in this Code shall apply to copper conductors. If other materials are used, the size shall be changed accordingly.",
+      "context_tags": [
+        "conductors",
+        "material"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.6",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Conductor Sizes",
+      "content": "Conductor sizes are expressed in American Wire Gauge (AWG) or in circular mils.",
+      "context_tags": [
+        "conductor sizes",
+        "AWG"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.7",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Wiring Integrity",
+      "content": "Completed wiring installations shall be free from short circuits, ground faults, or any connections to ground other than those required or permitted elsewhere in this Code.",
+      "context_tags": [
+        "wiring integrity",
+        "safety"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.8",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Wiring Methods",
+      "content": "Only wiring methods recognized as suitable are included in this Code. The recognized methods of wiring shall be permitted to be installed in any type of building, occupancy, or premises wiring system, except as otherwise provided in this Code.",
+      "context_tags": [
+        "wiring methods",
+        "installation"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.9",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Interrupting Rating",
+      "content": "Equipment intended to interrupt current at fault levels shall have an interrupting rating at nominal circuit voltage at least equal to the available fault current at the line terminals of the equipment. Equipment intended to interrupt current at other than fault levels shall have an interrupting rating at nominal circuit voltage at least equal to the current that must be interrupted.",
+      "context_tags": [
+        "interrupting rating",
+        "fault current"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.10",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Circuit Impedance, Short-Circuit Current Ratings, and Other Characteristics",
+      "content": "The overcurrent protective devices, the total impedance, the equipment short-circuit current ratings, and other characteristics of the circuit to be protected shall be selected and coordinated to permit the circuit protective devices used to clear a fault to do so without extensive damage to the electrical equipment of the circuit. This fault shall be assumed to be either between two or more of the circuit conductors or between any circuit conductor and the equipment grounding conductor(s) permitted in 250.118. Listed equipment applied in accordance with their listing shall be considered to meet the requirements of this section.",
+      "context_tags": [
+        "circuit protection",
+        "short-circuit"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.11",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Deteriorating Agents",
+      "content": "Unless identified for use in the operating environment, no conductors or equipment shall be located in damp or wet locations; where exposed to gases, fumes, vapors, liquids, or other agents that have a deteriorating effect on the conductors or equipment; or where exposed to excessive temperatures. Informational Note No. 1: See 300.6 for protection against corrosion. Informational Note No. 2: Some cleaning and lubricating compounds can cause severe deterioration of many plastic materials used for insulating and structural applications in equipment. Equipment not identified for outdoor use and equipment identified only for indoor use, such as 'dry locations,' 'indoor use only,' 'clamp locations,' or enclosure Types 1, 2, 5, 12, 12K, and/or 13, shall be protected against damage from the weather during construction. Informational Note No. 3: See Table 110.28 for appropriate enclosure-type designations. Informational Note No. 4: See NFPA 500.2015, Building Construction and Safety Code, the International Building Code (IBC), and the International Residential Code (IRC), for information for minimum flood provisions.",
+      "context_tags": [
+        "deteriorating agents",
+        "environmental conditions"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.12",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Mechanical Execution of Work",
+      "content": "Electrical equipment shall be installed in a professional and skillful manner. Informational Note: See ANSI/NFPA 1-2015, Standard for Good Workmanship in Electrical Construction, and other ANSI-approved installation standards for information on accepted industry practices.",
+      "context_tags": [
+        "installation",
+        "workmanship"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.12(A)",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Unused Openings",
+      "content": "Unused openings, other than those intended for the operation of equipment, those intended for mounting purposes, or those permitted as part of the design for listed equipment, shall be closed to afford protection substantially equivalent to the wall of the equipment. Where metallic plugs or plates are used with nonmetallic enclosures, they shall be recessed at least 6 mm (1/4 in.) from the outer surface of the enclosure.",
+      "context_tags": [
+        "openings",
+        "protection"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.12(B)",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Integrity of Electrical Equipment and Connections",
+      "content": "Internal parts of electrical equipment, including busbars, wiring terminals, insulators, and other surfaces, shall not be damaged or contaminated by foreign materials such as paint, plaster, cleaners, abrasives, or corrosive residues. There shall be no damaged parts that may adversely affect safe operation or mechanical strength of the equipment such as parts that are broken; bent; cut; or deteriorated by corrosion, chemical action, or overheating.",
+      "context_tags": [
+        "equipment integrity",
+        "connections"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.12(C)",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Cables and Conductors",
+      "content": "Cables and conductors installed exposed on the surfaces of ceilings and sidewalls shall be supported by the building structure in such a manner that the cables and conductors will not be damaged by normal building use. Such cables and conductors shall be secured by hardware including straps, staples, cable ties, hangers, or similar fittings designed and installed so as not to damage the cable. The installation shall also conform with 300.4 and 300.11. Nonmetallic cable ties and other nonmetallic cable accessories used to secure and support cables in other spaces used for environmental air (plenums) shall be listed as having low smoke and heat release properties. Informational Note No. 1: See NFPA 90A-2021, Standard for the Installation of Air Conditioning and Ventilating Systems, 4.3.11.2.6.5 and 4.3.11.5.5.6, for discrete combustible components installed in accordance with 300.22(C). Informational Note No. 2: Paint, plaster, cleaners, abrasives, corrosive residues, or other contaminants may result in an undetermined alteration of optical fiber cable properties.",
+      "context_tags": [
+        "cables",
+        "conductors",
+        "support"
+      ],
+      "related_sections": []
+    },
+    {
+      "article_number": "110",
+      "section_number": "110.13",
+      "page_number": "70-64",
+      "article_title": "GENERAL REQUIREMENTS FOR ELECTRICAL INSTALLATIONS",
+      "section_title": "Mounting and Cooling of Equipment",
+      "content": "(A) Mounting. Electrical equipment shall be firmly secured to the surface on which it is mounted. Wooden plugs driven into holes in masonry, concrete, plaster, or similar materials shall not be used. (B) Cooling. Electrical equipment that depends on the natural circulation of air and convection principles for cooling of exposed surfaces shall be installed so that room airflow over the equipment is not obstructed.",
+      "context_tags": [
+        "mounting",
+        "cooling"
+      ],
+      "related_sections": []
+    }
+  ]
+}

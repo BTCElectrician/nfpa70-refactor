@@ -1,297 +1,191 @@
-import re
-from typing import List, Dict, Optional, Any, Tuple, Sequence
-from dataclasses import dataclass, field
 import asyncio
+from typing import List, Dict, Optional
 from loguru import logger
-from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type, wait_exponential
+from tenacity import AsyncRetrying, stop_after_attempt, stop_after_delay, retry_if_exception_type, wait_exponential
 import json
 from openai import AsyncOpenAI, APIError
 from contextlib import asynccontextmanager
 import httpx
-
-@dataclass
-class CodePosition:
-    """Tracks the current position within the electrical code document."""
-    article_number: Optional[str] = None
-    article_title: Optional[str] = None
-    section_number: Optional[str] = None
-    section_title: Optional[str] = None
-    subsection_letter: Optional[str] = None
-    hierarchy: List[str] = field(default_factory=list)
-    context_before: Optional[str] = None
-    context_after: Optional[str] = None
-
-    def update_from_text(self, text: str) -> Tuple[bool, str]:
-        """Updates position based on text markers."""
-        position_changed = False
-        change_type = ""
-
-        article_match = re.search(r'ARTICLE\s+(\d+)\s*[-—]\s*(.+?)(?=\n|$)', text, re.IGNORECASE)
-        if article_match:
-            self.article_number = article_match.group(1)
-            self.article_title = article_match.group(2).strip()
-            self.hierarchy = [f"Article {self.article_number}"]
-            self.section_number = None
-            self.section_title = None
-            self.subsection_letter = None
-            position_changed = True
-            change_type = "article"
-
-        section_match = re.search(r'(?:^|\s)(\d+\.\d+)\s+([^.]+?)(?=\n|$)', text)
-        if section_match:
-            self.section_number = section_match.group(1)
-            self.section_title = section_match.group(2).strip()
-            if self.hierarchy:
-                self.hierarchy = self.hierarchy[:1] + [f"Section {self.section_number}"]
-            self.subsection_letter = None
-            position_changed = True
-            change_type = "section"
-
-        subsection_match = re.search(r'\(([A-Z])\)\s+', text)
-        if subsection_match:
-            new_subsection = subsection_match.group(1)
-            if new_subsection != self.subsection_letter:
-                self.subsection_letter = new_subsection
-                if len(self.hierarchy) >= 2:
-                    self.hierarchy = self.hierarchy[:2] + [f"Subsection ({self.subsection_letter})"]
-                position_changed = True
-                change_type = "subsection"
-
-        return position_changed, change_type
-
-@dataclass
-class CodeChunk:
-    """Represents a chunk of electrical code with essential metadata."""
-    content: str                     # The actual text content of the chunk
-    page_number: int                 # Now represents NFPA page number (70-XX)
-    article_number: Optional[str]    # Article number (e.g., "90")
-    section_number: Optional[str]    # Section number (e.g., "90.2")
-    article_title: Optional[str]     # Title of the article
-    section_title: Optional[str]     # Title of the section
-    context_tags: List[str]          # Technical context tags
-    related_sections: List[str]      # Referenced code sections
+import time
+from data_processing.models import NFPAChunk, ChunkBatch
 
 class ElectricalCodeChunker:
-    """Chunks electrical code text with batched GPT-based cleanup and analysis."""
+    """Chunks electrical code text using GPT-focused approach."""
     
-    def __init__(
-        self,
-        openai_api_key: Optional[str] = None,
-        batch_size: int = 10,
-        max_concurrent_batches: int = 5
-    ):
-        """Initialize without creating session/connector (deferred until async context)."""
+    def __init__(self, openai_api_key: Optional[str] = None):
         self.logger = logger.bind(context="chunker")
         self.openai_api_key = openai_api_key
-        
-        # Initialize as None, will be set in async context
         self.http_client: Optional[httpx.AsyncClient] = None
         self.client: Optional[AsyncOpenAI] = None
-        
-        self.batch_size = batch_size
-        self.max_concurrent_batches = max_concurrent_batches
-        self.api_semaphore = asyncio.Semaphore(self.max_concurrent_batches * self.batch_size)
-        
-        # Define technical contexts for tagging
-        self.context_mapping = {
-            'service_equipment': [
-                'service equipment', 'service entrance', 'service drop',
-                'meter', 'service disconnect', 'main disconnect'
-            ],
-            'conductors': [
-                'conductor', 'wire', 'cable', 'AWG', 'kcmil',
-                'copper', 'aluminum'
-            ],
-            'raceway': [
-                'EMT', 'IMC', 'RMC', 'PVC', 'conduit',
-                'electrical metallic tubing'
-            ],
-            'grounding': [
-                'ground', 'grounding', 'bonding', 'GEC',
-                'equipment grounding conductor'
-            ],
-            'overcurrent': [
-                'breaker', 'circuit breaker', 'fuse', 'overcurrent',
-                'AFCI', 'GFCI'
-            ]
-        }
 
     async def __aenter__(self):
-        """Async context manager entry - initializes httpx client and OpenAI client."""
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        # Enhanced HTTPX configuration
+        timeout = httpx.Timeout(
+            connect=10.0,    # Connection timeout
+            read=60.0,       # Read timeout
+            write=60.0,      # Write timeout
+            pool=60.0        # Pool timeout
+        )
+        limits = httpx.Limits(
+            max_connections=100,              # Increased for better concurrency
+            max_keepalive_connections=20,     # Optimal keepalive connections
+            keepalive_expiry=30.0            # Connection expiry time
+        )
+        
+        self.http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            http2=True  # Enable HTTP/2 for better performance
+        )
+        
         if self.openai_api_key:
             self.client = AsyncOpenAI(
                 api_key=self.openai_api_key,
                 http_client=self.http_client,
                 max_retries=5
             )
+            self.logger.debug("Initialized OpenAI client with enhanced HTTPX configuration")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit - properly closes httpx client."""
         if self.http_client:
             await self.http_client.aclose()
             self.http_client = None
         if self.client:
             await self.client.close()
             self.client = None
+        self.logger.debug("Cleaned up HTTP client resources")
 
-    @asynccontextmanager
-    async def _api_limit_guard(self):
-        """Context manager for API rate limiting."""
-        async with self.api_semaphore:
-            yield
-
-    async def _process_chunk_batch(self, chunks: Sequence[str]) -> List[Dict]:
-        """Process multiple chunks in a single GPT call with proper async retry."""
-        if not self.client or not chunks:
-            return [{} for _ in chunks]
-            
+    async def _process_page_with_gpt(self, pdf_page_num: int, text: str) -> List[Dict]:
+        """Process a single page of text using GPT to clean and chunk in one pass."""
+        if not self.client:
+            return []
+        
+        start_time = time.time()
         try:
+            # Enhanced retry configuration
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
+                stop=(
+                    stop_after_attempt(3) |    # Stop after 3 attempts
+                    stop_after_delay(30)        # Or after 30 seconds total
+                ),
                 wait=wait_exponential(multiplier=1, min=4, max=10),
-                retry=retry_if_exception_type((TimeoutError, APIError))
+                retry=retry_if_exception_type((TimeoutError, APIError, httpx.HTTPError)),
+                before_sleep=lambda retry_state: self.logger.warning(
+                    f"Retrying request after attempt {retry_state.attempt_number}")
             ):
                 with attempt:
-                    async with self._api_limit_guard():
-                        response = await self.client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=[{
-                                "role": "system", 
-                                "content": """You are processing NFPA 70 (NEC) text. Clean any OCR errors and analyze the content.
-                                For each text chunk, return a JSON object with:
-                                {
-                                    "content": string,         # OCR-corrected text
-                                    "article_number": string,
-                                    "section_number": string,
-                                    "article_title": string,
-                                    "section_title": string,
-                                    "context_tags": string[],  # Technical categories
-                                    "related_sections": string[]  # Referenced sections
-                                }"""
-                            },
-                            {
-                                "role": "user", 
-                                "content": f"Process these NEC text chunks: {json.dumps(chunks)}"
-                            }],
-                            timeout=45.0,
-                            temperature=0,
-                            response_format={"type": "json_object"}
-                        )
-                        
-                        try:
-                            results = json.loads(response.choices[0].message.content)
-                            return results.get("chunks", [{} for _ in chunks])
-                        except json.JSONDecodeError:
-                            return [{} for _ in chunks]
-                        
+                    self.logger.debug(f"Making API request for page {pdf_page_num}, attempt {attempt.retry_state.attempt_number}")
+                    
+                    response = await self.client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{
+                            "role": "system",
+                            "content": """Process this NFPA 70 page into properly structured chunks:
+                            1. Clean ALL OCR errors (e.g., "GEJ'ERAL" → "GENERAL", "ELECfRIC..AL" → "ELECTRICAL")
+                            2. Extract and structure each complete section with:
+                               - Full section content including subsections
+                               - Article number (e.g., "110")
+                               - Section number (e.g., "110.3" or "110.3(A)")
+                               - Article title
+                               - Section title
+                            3. Important requirements:
+                               - Keep sections together with their subsections
+                               - Include ALL content (notes, exceptions, etc.)
+                               - Add relevant context_tags
+                               - Add related_sections references
+                               - Handle subsections correctly (e.g., "(A)", "(B)")
+                               - Reject measurements as sections (e.g., "1.2 m" stays in parent section)
+                            4. Return as JSON array of chunks with consistent structure
+                            """
+                        }, {
+                            "role": "user",
+                            "content": f"Process this page (PDF page {pdf_page_num}, NFPA page 70-{pdf_page_num-3}):\n\n{text}"
+                        }],
+                        timeout=120.0,
+                        temperature=0,
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    result = json.loads(response.choices[0].message.content)
+                    chunks = result.get("chunks", [])
+                    
+                    # Ensure page number format
+                    nfpa_page = f"70-{pdf_page_num-3}"
+                    for chunk in chunks:
+                        chunk["page_number"] = nfpa_page
+                    
+                    duration = time.time() - start_time
+                    self.logger.debug(f"Processed page {pdf_page_num} into {len(chunks)} chunks in {duration:.2f}s")
+                    return chunks
+
+        except asyncio.TimeoutError as e:
+            duration = time.time() - start_time
+            self.logger.error(f"GPT timeout for page {pdf_page_num} after {duration:.2f}s: {str(e)}")
+            return []
         except Exception as e:
-            self.logger.error(f"Error in GPT batch processing: {str(e)}")
-            return [{} for _ in chunks]
+            duration = time.time() - start_time
+            self.logger.error(f"GPT processing failed for page {pdf_page_num} after {duration:.2f}s: {str(e)}")
+            self.logger.exception(e)  # Add full traceback for debugging
+            return []
 
-    async def process_chunks_async(self, chunks: List[str]) -> List[Dict]:
-        """Process chunks with proper async session handling."""
-        self.logger.info(f"Starting parallel processing of {len(chunks)} chunks")
-        results = []
-        
-        # Create sub-batches
-        sub_batches = []
-        for i in range(0, len(chunks), self.batch_size):
-            batch_slice = chunks[i:i + self.batch_size]
-            sub_batches.append(batch_slice)
-            
-        # Process in parallel with controlled concurrency
-        tasks = []
-        for batch_slice in sub_batches:
-            tasks.append(asyncio.create_task(self._process_chunk_batch(batch_slice)))
-            
-        # Run batches with controlled concurrency
-        output_all = []
-        for i in range(0, len(tasks), self.max_concurrent_batches):
-            slice_of_tasks = tasks[i:i + self.max_concurrent_batches]
-            partial_results = await asyncio.gather(*slice_of_tasks)
-            output_all.extend(partial_results)
-            
-        # Flatten results
-        for partial_batch_result in output_all:
-            results.extend(partial_batch_result)
-            
-        return results
-
-    async def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
-        """Process NFPA 70 content into context-aware chunks."""
+    async def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[NFPAChunk]:
+        """Process NFPA 70 content into chunks."""
         chunks = []
-        raw_chunks = []
+        seen_chunks = set()  # Deduplication by page and section
         
         if not pages_text:
             return chunks
 
-        # Extract chunks first
-        start_page = min(26, min(pages_text.keys()))
-        for page_num in sorted(k for k in pages_text if k >= start_page):
-            text = pages_text[page_num]
-            lines = text.split('\n')
-            current_chunk = []
-            
-            for line in lines:
-                if not line.strip():
-                    continue
-
-                if re.search(r'ARTICLE\s+\d+|^\d+\.\d+\s+[A-Z]', line):
-                    if current_chunk:
-                        raw_chunks.append(' '.join(current_chunk))
-                    current_chunk = [line]
-                else:
-                    current_chunk.append(line)
-            
-            if current_chunk:
-                raw_chunks.append(' '.join(current_chunk))
-
-        # Process chunks in batches asynchronously
-        self.logger.info(f"Processing {len(raw_chunks)} chunks in batches of {self.batch_size}")
+        self.logger.info(f"Processing {len(pages_text)} pages")
         
-        # Process chunks asynchronously
-        chunk_analyses = await self.process_chunks_async(raw_chunks)
-        
-        # Convert results to CodeChunk objects
-        for i, analysis in enumerate(chunk_analyses):
-            if not analysis:  # Skip empty results
-                continue
-                
-            chunks.append(CodeChunk(
-                content=analysis.get('content', raw_chunks[i]),
-                page_number=start_page + (i // 10),  # Approximate page number
-                article_number=analysis.get('article_number'),
-                article_title=analysis.get('article_title'),
-                section_number=analysis.get('section_number'),
-                section_title=analysis.get('section_title'),
-                context_tags=analysis.get('context_tags', []),
-                related_sections=analysis.get('related_sections', [])
-            ))
-
-        self.logger.success(f"Successfully processed {len(chunks)} chunks")
-        return chunks
-
-async def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) -> List[Dict]:
-    """Wrapper for older code if needed."""
-    async with ElectricalCodeChunker(openai_api_key=openai_api_key) as chunker:
-        pages_text = {1: text}
-        chunks = await chunker.chunk_nfpa70_content(pages_text)
-    
-        return [
-            {
-                "content": chunk.content,
-                "page_number": chunk.page_number,
-                "article_number": chunk.article_number,
-                "section_number": chunk.section_number,
-                "article_title": chunk.article_title or "",
-                "section_title": chunk.section_title or "",
-                "context_tags": chunk.context_tags,
-                "related_sections": chunk.related_sections,
-                "gpt_analysis": {},
-                "cleaned_text": chunk.content,
-                "ocr_confidence": 1.0
-            }
-            for chunk in chunks
+        # Process pages concurrently with enhanced timeout
+        tasks = [
+            asyncio.wait_for(
+                self._process_page_with_gpt(page_num, text),
+                timeout=300.0  # 5-minute timeout per page
+            )
+            for page_num, text in sorted(pages_text.items())
         ]
+        
+        try:
+            chunk_lists = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for page_chunks in chunk_lists:
+                if isinstance(page_chunks, Exception):
+                    self.logger.error(f"Failed to process page: {str(page_chunks)}")
+                    self.logger.exception(page_chunks)  # Add full traceback
+                    continue
+                    
+                for chunk_data in page_chunks:
+                    try:
+                        # Convert to NFPAChunk for validation
+                        nfpa_chunk = NFPAChunk(
+                            content=chunk_data.get('content', ''),
+                            page_number=chunk_data['page_number'],
+                            article_number=chunk_data.get('article_number'),
+                            section_number=chunk_data.get('section_number'),
+                            article_title=chunk_data.get('article_title'),
+                            section_title=chunk_data.get('section_title'),
+                            context_tags=chunk_data.get('context_tags', []),
+                            related_sections=chunk_data.get('related_sections', [])
+                        )
+                        
+                        key = (nfpa_chunk.page_number, nfpa_chunk.section_number or 'Article')
+                        if key not in seen_chunks:
+                            seen_chunks.add(key)
+                            chunks.append(nfpa_chunk)
+                            self.logger.debug(f"Added chunk: {key}")
+                        else:
+                            self.logger.debug(f"Skipped duplicate: {key}")
+                    except ValueError as e:
+                        self.logger.warning(f"Invalid chunk data: {str(e)}")
+                        continue
+            
+            self.logger.success(f"Successfully processed {len(chunks)} chunks")
+            return chunks
+            
+        except Exception as e:
+            self.logger.error(f"Error processing pages: {str(e)}")
+            self.logger.exception(e)  # Add full traceback
+            raise
