@@ -28,24 +28,28 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         index_name: The name to give your search index
     """
     try:
+        # Set up the client with admin credentials
         credential = AzureKeyCredential(admin_key)
         index_client = SearchIndexClient(endpoint=service_endpoint, credential=credential)
 
+        # Delete existing index if it exists (clean slate)
         try:
             index_client.delete_index(index_name)
             logger.info(f"Deleted existing index '{index_name}'")
         except Exception:
             logger.info(f"Index '{index_name}' does not exist yet")
 
+        # Configure vector search with HNSW algorithm
+        # HNSW (Hierarchical Navigable Small World) is efficient for similarity search
         vector_search = VectorSearch(
             algorithms=[
                 HnswAlgorithmConfiguration(
                     name="hnsw-config",
                     parameters=HnswParameters(
-                        m=4,
-                        ef_construction=400,
-                        ef_search=500,
-                        metric="cosine"
+                        m=4,                    # Number of bi-directional links created for every new element
+                        ef_construction=400,     # Size of dynamic candidate list for construction
+                        ef_search=500,          # Size of dynamic candidate list for search
+                        metric="cosine"         # Distance metric for vector comparison
                     )
                 )
             ],
@@ -57,34 +61,46 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             ]
         )
 
+        # Define all fields for the search index
         fields = [
+            # Unique identifier for each document
             SimpleField(
-                name="id",
-                type=SearchFieldDataType.String,
+                name="id", 
+                type=SearchFieldDataType.String, 
                 key=True
             ),
+            
+            # Main content field - searchable for full-text search
             SearchableField(
                 name="content",
                 type=SearchFieldDataType.String,
                 analyzer_name="standard.lucene"
             ),
+            
+            # Page number - useful for filtering and sorting
             SimpleField(
                 name="page_number",
-                type=SearchFieldDataType.String,  # Changed to String for "70-XX"
+                type=SearchFieldDataType.Int32,
                 filterable=True
             ),
+            
+            # Article number - searchable and filterable
             SearchableField(
                 name="article_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
                 facetable=True
             ),
+            
+            # Section number - searchable and filterable
             SearchableField(
                 name="section_number",
                 type=SearchFieldDataType.String,
                 filterable=True,
                 facetable=True
             ),
+            
+            # Article and section titles - searchable
             SearchableField(
                 name="article_title",
                 type=SearchFieldDataType.String
@@ -93,6 +109,8 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 name="section_title",
                 type=SearchFieldDataType.String
             ),
+            
+            # Lists of tags and related sections
             SearchField(
                 name="context_tags",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.String),
@@ -105,6 +123,9 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
                 filterable=True,
                 facetable=True
             ),
+            
+            # Vector field for semantic search
+            # Must match OpenAI's embedding dimension (1536)
             SearchField(
                 name="content_vector",
                 type=SearchFieldDataType.Collection(SearchFieldDataType.Single),
@@ -114,6 +135,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             )
         ]
 
+        # Configure semantic search capabilities
         semantic_config = SemanticConfiguration(
             name="my-semantic-config",
             prioritized_fields=SemanticPrioritizedFields(
@@ -123,6 +145,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
         )
         semantic_search = SemanticSearch(configurations=[semantic_config])
 
+        # Create the index with all configurations
         index = SearchIndex(
             name=index_name,
             fields=fields,
@@ -130,6 +153,7 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             semantic_search=semantic_search
         )
 
+        # Create or update the index in Azure Search
         logger.info(f"Creating search index '{index_name}' ...")
         index_client.create_or_update_index(index)
         logger.info(f"Index '{index_name}' created successfully.")
