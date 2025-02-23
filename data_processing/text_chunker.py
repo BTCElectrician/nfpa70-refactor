@@ -5,7 +5,7 @@ import asyncio
 from loguru import logger
 from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type, wait_exponential
 import json
-from openai import AsyncOpenAI, APIError
+from openai import AsyncOpenAI, APIError, RateLimitError, APITimeoutError
 from contextlib import asynccontextmanager
 import httpx
 
@@ -77,12 +77,14 @@ class ElectricalCodeChunker:
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
-        batch_size: int = 10,
-        max_concurrent_batches: int = 5
+        batch_size: int = 5,  # Reduced for better throughput
+        max_concurrent_batches: int = 3,  # Reduced for stability
+        timeout: float = 90.0  # Increased timeout
     ):
         """Initialize without creating session/connector (deferred until async context)."""
         self.logger = logger.bind(context="chunker")
         self.openai_api_key = openai_api_key
+        self.timeout = timeout
         
         # Initialize as None, will be set in async context
         self.http_client: Optional[httpx.AsyncClient] = None
@@ -118,12 +120,25 @@ class ElectricalCodeChunker:
 
     async def __aenter__(self):
         """Async context manager entry - initializes httpx client and OpenAI client."""
-        self.http_client = httpx.AsyncClient(timeout=30.0)
+        self.http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=60.0,    # Connection timeout
+                read=self.timeout,  # Read timeout
+                write=60.0,      # Write timeout
+                pool=30.0        # Pool timeout
+            ),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20,
+                keepalive_expiry=30.0
+            )
+        )
         if self.openai_api_key:
             self.client = AsyncOpenAI(
                 api_key=self.openai_api_key,
                 http_client=self.http_client,
-                max_retries=5
+                max_retries=5,
+                timeout=self.timeout
             )
         return self
 
@@ -149,9 +164,9 @@ class ElectricalCodeChunker:
             
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=1, min=4, max=10),
-                retry=retry_if_exception_type((TimeoutError, APIError))
+                stop=stop_after_attempt(5),  # Increased attempts
+                wait=wait_exponential(multiplier=2, min=4, max=30),  # Adjusted wait times
+                retry=retry_if_exception_type((TimeoutError, APIError, RateLimitError))  # Added RateLimitError
             ):
                 with attempt:
                     async with self._api_limit_guard():
