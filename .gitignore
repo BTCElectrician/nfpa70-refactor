@@ -53,3 +53,19 @@ Thumbs.db
 
 # JSON chunks
 /Users/collin/nfpa70-refactor/chunked_output/page_67_chunks.json
+/Users/collin/nfpa70-refactor/test_output
+test_output/pre_chunking_content.txt
+test_output/post_chunking_content.txt
+test_output/final_output.json
+test_output/raw_page_64.txt
+test_output/raw_page_67.txt
+test_output/raw_page_71.txt
+test_output/raw_page_72.txt
+test_output/raw_page_70.txt
+test_output/raw_page_69.txt
+test_output/raw_page_68.txt
+test_output/raw_page_66.txt
+test_output/raw_page_65.txt
+test_output/raw_page_63.txt
+test_output/chunking_differences.txt
+test_output/chunk_metadata.json

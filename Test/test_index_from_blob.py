@@ -59,7 +59,7 @@ async def test_index_from_blob():
         search_endpoint = os.getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
         search_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
         openai_key = os.getenv('OPENAI_API_KEY')
-        test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-test')
+        test_index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor-simp')
 
         # Load actual data from blob storage - first two chunks
         logger.info("=== LOADING FROM BLOB STORAGE ===")
@@ -72,7 +72,7 @@ async def test_index_from_blob():
         
         for blob_name in file_names:
             blob_manager = BlobStorageManager(
-                container_name="nfpa70-pdf-chunks",
+                container_name="nfpa70-refactor-simp",
                 blob_name=blob_name
             )
             

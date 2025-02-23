@@ -18,7 +18,7 @@ def main():
     # Load environment variables for indexing
     search_endpoint = os.getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
     search_admin_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
-    index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-index')
+    index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor-simp')
     openai_api_key = os.getenv('OPENAI_API_KEY')
 
     try:
@@ -28,7 +28,7 @@ def main():
         
         # Step 1: Load chunked data from Blob Storage
         logger.info("Loading data from blob storage...")
-        blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks", blob_name="nfpa70_chunks.json")
+        blob_manager = BlobStorageManager(container_name="nfpa70-refactor-simp", blob_name="nfpa70_chunks.json")
         blob_data = blob_manager.load_processed_data()
         chunks = blob_data.get("chunks", [])
 

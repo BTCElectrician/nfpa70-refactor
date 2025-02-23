@@ -27,14 +27,14 @@ async def async_chunk_content(pages_text, openai_api_key):
 
 def get_page_sections() -> list[tuple[int, int]]:
     """
-    Generate 50-page sections from start to last text-content page (775).
+    Generate 10-page sections from PDF page 66 (NFPA page 70-63) to last text-content page (775).
     Returns list of (start_page, end_page) tuples.
     Stops at page 775 to avoid processing table-only sections.
     """
     sections = []
-    start_page = 26  # First content page
+    start_page = 66  # First content page (PDF page 66 = NFPA 70-63)
     while start_page <= 775:  # Last text content page (before tables)
-        end_page = min(start_page + 49, 775)  # 50 pages or until end of text
+        end_page = min(start_page + 9, 775)  # 10 pages or until end of text
         sections.append((start_page, end_page))
         start_page = end_page + 1
     return sections
@@ -49,25 +49,24 @@ async def process_section(
 ) -> None:
     """
     Process a single section of the document and save to its own blob file.
-    
-    Args:
-        extractor: PDFExtractor instance
-        pdf_path: Path to PDF file
-        start_page: Starting page number
-        end_page: Ending page number
-        openai_api_key: OpenAI API key
-        blob_manager: BlobStorageManager instance
+    PDF page numbers are offset by 3 from NFPA document numbers.
+    Example: PDF page 66 = NFPA page 70-63
     """
-    logger.info(f"Processing pages {start_page} to {end_page}")
+    logger.info(f"Processing PDF pages {start_page} to {end_page}")
     
     # Extract text from PDF
     pages_text = extractor.extract_text_from_pdf(
         pdf_path=Path(pdf_path),
         start_page=start_page,
         end_page=end_page,
-        max_pages=50  # Maintain your existing setting
+        max_pages=10
     )
-    logger.info(f"Extracted text from {len(pages_text)} pages ({start_page}-{end_page})")
+    
+    # Calculate NFPA document page numbers for blob name
+    nfpa_start = start_page - 3  # Convert PDF page to NFPA page
+    nfpa_end = end_page - 3      # Convert PDF page to NFPA page
+    
+    logger.info(f"Extracted text from {len(pages_text)} pages (NFPA 70-{nfpa_start} to 70-{nfpa_end})")
     
     # Process chunks
     logger.info("Starting GPT-based chunking of the text...")
@@ -114,16 +113,16 @@ async def process_section(
             raise
 
         # Create a new blob manager for this section
-        blob_name = f"nfpa70_chunks_{start_page:03d}_{end_page:03d}.json"
+        blob_name = f"nfpa70_chunks_{nfpa_start:03d}_{nfpa_end:03d}.json"
         section_blob_manager = BlobStorageManager(
-            container_name="nfpa70-pdf-chunks",
+            container_name="nfpa70-refactor-simp",
             blob_name=blob_name
         )
         section_blob_manager.save_processed_data(data_to_save)
-        logger.info(f"Saved {len(chunk_dicts)} chunks from pages {start_page}-{end_page} to {blob_name}")
+        logger.info(f"Saved {len(chunk_dicts)} chunks from pages {nfpa_start}-{nfpa_end} to {blob_name}")
 
     except Exception as e:
-        logger.error(f"Failed to save chunks for pages {start_page}-{end_page} to blob storage: {e}")
+        logger.error(f"Failed to save chunks for pages {nfpa_start}-{nfpa_end} to blob storage: {e}")
         raise
 
 async def main():
@@ -137,7 +136,7 @@ async def main():
         pdf_path = os.getenv('PDF_PATH')
         search_endpoint = os.getenv('AZURE_SEARCH_SERVICE_ENDPOINT')
         search_admin_key = os.getenv('AZURE_SEARCH_ADMIN_KEY')
-        index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor')
+        index_name = os.getenv('AZURE_SEARCH_INDEX_NAME', 'nfpa70-refactor-simp')
         openai_api_key = os.getenv('OPENAI_API_KEY')
         storage_connection_string = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
 
@@ -154,7 +153,7 @@ async def main():
 
         # Initialize services
         extractor = PDFExtractor()
-        blob_manager = BlobStorageManager(container_name="nfpa70-pdf-chunks")
+        blob_manager = BlobStorageManager(container_name="nfpa70-refactor-simp")
         
         # Get all page sections to process
         sections = get_page_sections()

@@ -1,15 +1,49 @@
 import numpy as np
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 from typing import List, Dict, Any, Optional
 from loguru import logger
 from tqdm import tqdm
 import json
+import httpx
+from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type, APITimeoutError, RateLimitError, APIError
 
 class DataIndexer:
     """Handles indexing of processed electrical code content into Azure Search."""
     
+    async def __aenter__(self):
+        """Enhanced HTTPX client configuration."""
+        timeout = httpx.Timeout(
+            connect=60.0,    # Connection timeout
+            read=90.0,       # Read timeout
+            write=60.0,      # Write timeout
+            pool=30.0        # Pool timeout
+        )
+        limits = httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0
+        )
+        self.http_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            follow_redirects=True,
+            http2=True
+        )
+        if self.openai_api_key:
+            self.openai_client = AsyncOpenAI(
+                api_key=self.openai_api_key,
+                http_client=self.http_client,
+                max_retries=5,
+                timeout=90.0
+            )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Close the HTTP client."""
+        await self.http_client.aclose()
+
     def __init__(self, service_endpoint: str, admin_key: str, index_name: str, openai_api_key: str):
         """Initialize the indexer with necessary credentials and configuration."""
         self.search_client = SearchClient(
@@ -17,7 +51,7 @@ class DataIndexer:
             index_name=index_name,
             credential=AzureKeyCredential(admin_key)
         )
-        self.openai_client = OpenAI(api_key=openai_api_key)
+        self.openai_api_key = openai_api_key  # Store for async client initialization
         self.logger = logger.bind(context="indexer")
 
     def generate_embeddings(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
@@ -130,13 +164,13 @@ class DataIndexer:
         if not all(isinstance(x, float) for x in document["content_vector"]):
             raise ValueError("All vector values must be float type")
 
-    def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 50, embed_batch_size: int = 16) -> None:
+    async def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 25, embed_batch_size: int = 8) -> None:
         """
         Index all documents using batched embeddings and batched upload.
         Args:
             chunks: List of chunk dictionaries with 'content' etc.
-            batch_size: How many documents to upload in one batch to Azure Search
-            embed_batch_size: How many chunks to embed in one call to OpenAI embeddings
+            batch_size: How many documents to upload in one batch to Azure Search (reduced from 50)
+            embed_batch_size: How many chunks to embed in one call to OpenAI embeddings (reduced from 16)
         """
         try:
             total_chunks = len(chunks)
@@ -149,8 +183,18 @@ class DataIndexer:
                 end_idx = min(start_idx + embed_batch_size, total_chunks)
                 batch_texts = [c["content"] for c in chunks[start_idx:end_idx]]
 
-                # Generate batch embeddings
-                embeddings = self.generate_embeddings_batch(batch_texts)
+                # Generate batch embeddings with retries
+                try:
+                    async for attempt in AsyncRetrying(
+                        stop=stop_after_attempt(5),
+                        wait=wait_exponential(multiplier=2, min=4, max=30),
+                        retry=retry_if_exception_type((APITimeoutError, RateLimitError, APIError))
+                    ):
+                        with attempt:
+                            embeddings = self.generate_embeddings_batch(batch_texts)
+                except Exception as e:
+                    self.logger.error(f"Failed to generate embeddings after retries: {str(e)}")
+                    raise
 
                 # Build document objects
                 for i, emb in enumerate(embeddings):
@@ -178,24 +222,19 @@ class DataIndexer:
                     if len(documents_to_upload) >= batch_size:
                         self.logger.debug(f"Uploading batch of {len(documents_to_upload)} documents")
                         try:
-                            results = self.search_client.upload_documents(documents=documents_to_upload)
-                            self.logger.info(f"Successfully indexed batch of {len(results)} documents")
-                            documents_to_upload = []
+                            async for attempt in AsyncRetrying(
+                                stop=stop_after_attempt(5),
+                                wait=wait_exponential(multiplier=2, min=4, max=30),
+                                retry=retry_if_exception_type((APITimeoutError, RateLimitError, APIError))
+                            ):
+                                with attempt:
+                                    results = self.search_client.upload_documents(documents=documents_to_upload)
+                                    self.logger.info(f"Successfully indexed batch of {len(results)} documents")
+                                    documents_to_upload = []
                         except Exception as e:
                             self.logger.error(f"Batch upload error: Type: {type(e)}, Error: {str(e)}")
                             self.logger.debug(f"Exception attributes: {dir(e)}")
                             raise
-
-            # Upload any remaining documents
-            if documents_to_upload:
-                self.logger.debug(f"Uploading final batch of {len(documents_to_upload)} documents")
-                try:
-                    results = self.search_client.upload_documents(documents=documents_to_upload)
-                    self.logger.info(f"Successfully indexed final batch of {len(results)} documents")
-                except Exception as e:
-                    self.logger.error(f"Batch upload error: Type: {type(e)}, Error: {str(e)}")
-                    self.logger.debug(f"Exception attributes: {dir(e)}")
-                    raise
 
         except Exception as e:
             self.logger.error(f"Fatal indexing error: Type: {type(e)}, Error: {str(e)}")
