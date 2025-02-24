@@ -78,7 +78,7 @@ class ElectricalCodeChunker:
         self,
         openai_api_key: Optional[str] = None,
         batch_size: int = 5,  # Reduced for better throughput
-        max_concurrent_batches: int = 3,  # Reduced for stability
+        max_concurrent_batches: int = 2,  # Reduced from 3 to 2 for stability
         timeout: float = 90.0  # Increased timeout
     ):
         """Initialize without creating session/connector (deferred until async context)."""
@@ -165,11 +165,12 @@ class ElectricalCodeChunker:
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(5),  # Increased attempts
-                wait=wait_exponential(multiplier=2, min=4, max=30),  # Adjusted wait times
-                retry=retry_if_exception_type((TimeoutError, APIError, RateLimitError))  # Added RateLimitError
+                wait=wait_exponential(multiplier=2, min=4, max=60),  # Increased max wait to 60s
+                retry=retry_if_exception_type((TimeoutError, APIError, RateLimitError))
             ):
                 with attempt:
                     async with self._api_limit_guard():
+                        self.logger.debug(f"Attempting GPT processing for batch of {len(chunks)} chunks")
                         response = await self.client.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=[{
@@ -190,19 +191,27 @@ class ElectricalCodeChunker:
                                 "role": "user", 
                                 "content": f"Process these NEC text chunks: {json.dumps(chunks)}"
                             }],
-                            timeout=45.0,
+                            timeout=90.0,  # Increased from 45.0 to 90.0
                             temperature=0,
                             response_format={"type": "json_object"}
                         )
                         
                         try:
                             results = json.loads(response.choices[0].message.content)
+                            self.logger.debug(f"Successfully processed batch of {len(chunks)} chunks")
                             return results.get("chunks", [{} for _ in chunks])
-                        except json.JSONDecodeError:
+                        except json.JSONDecodeError as e:
+                            self.logger.error(f"Failed to parse GPT response JSON: {str(e)}")
                             return [{} for _ in chunks]
                         
+        except RateLimitError as e:
+            self.logger.error(f"Rate limit exceeded in GPT processing: {str(e)}")
+            return [{} for _ in chunks]
+        except APITimeoutError as e:
+            self.logger.error(f"Timeout in GPT processing after retries: {str(e)}")
+            return [{} for _ in chunks]
         except Exception as e:
-            self.logger.error(f"Error in GPT batch processing: {str(e)}")
+            self.logger.error(f"Unexpected error in GPT batch processing: {type(e).__name__}: {str(e)}")
             return [{} for _ in chunks]
 
     async def process_chunks_async(self, chunks: List[str]) -> List[Dict]:
@@ -218,8 +227,9 @@ class ElectricalCodeChunker:
             
         # Process in parallel with controlled concurrency
         tasks = []
-        for batch_slice in sub_batches:
+        for batch_idx, batch_slice in enumerate(sub_batches):
             tasks.append(asyncio.create_task(self._process_chunk_batch(batch_slice)))
+            self.logger.debug(f"Scheduled batch {batch_idx + 1}/{len(sub_batches)} with {len(batch_slice)} chunks")
             
         # Run batches with controlled concurrency
         output_all = []
@@ -227,6 +237,7 @@ class ElectricalCodeChunker:
             slice_of_tasks = tasks[i:i + self.max_concurrent_batches]
             partial_results = await asyncio.gather(*slice_of_tasks)
             output_all.extend(partial_results)
+            self.logger.info(f"Completed processing batches {i + 1} to {i + len(slice_of_tasks)} of {len(tasks)}")
             
         # Flatten results
         for partial_batch_result in output_all:
