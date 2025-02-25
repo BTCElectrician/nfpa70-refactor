@@ -47,6 +47,16 @@ This document tracks all test runs for the NFPA 70 PDF processing pipeline, incl
 
 ---
 
+## ⚡ Possible Further Optimizations
+If you want to improve processing speed further:
+
+- **🔄 Adjust Batch Size:** Try increasing `batch_size` to **8-10** to reduce the number of API calls.
+- **⏳ Tune Timeout Settings:** The current settings might be **overly cautious**, causing unnecessary delays.
+- **✂️ Simplify GPT Prompt:** A **shorter, more focused** prompt might yield **faster responses** without losing accuracy.
+- **⏱ Handle Straggler Batches:** Implement a **timeout mechanism** for very slow batches to prevent hang-ups.
+
+---
+
 ## 🛠 Automating Test Logging (To Be Implemented)
 To streamline test tracking, the system should **automatically log each test run** into this Markdown file.  
 Proposed logging script:
