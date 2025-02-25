@@ -13,6 +13,7 @@ from tenacity import (
     wait_exponential, RetryError
 )
 from openai import AsyncOpenAI, RateLimitError, APITimeoutError, APIError
+from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
 
 # Import from our models module
 from data_processing.models import (
@@ -93,8 +94,8 @@ class NEC70TextChunker:
         self,
         openai_api_key: Optional[str] = None,
         model: str = "gpt-4o-mini",
-        batch_size: int = 5,
-        max_concurrent_batches: int = 2,
+        batch_size: int = 8,  # Increased from 5 to 8
+        max_concurrent_batches: int = 3,  # Increased from 2 to 3
         timeout: float = 120.0,
         max_retries: int = 5
     ):
@@ -128,10 +129,10 @@ class NEC70TextChunker:
         """Async context manager entry - initializes httpx client and OpenAI client."""
         # Configure timeouts for different operations
         timeout = httpx.Timeout(
-            connect=30.0,     # Connection timeout
-            read=self.timeout, # Read timeout
-            write=60.0,       # Write timeout
-            pool=30.0         # Pool timeout
+            connect=10.0,     # Reduced from 30.0
+            read=30.0,        # Reduced from self.timeout
+            write=30.0,       # Reduced from 60.0
+            pool=15.0         # Reduced from 30.0
         )
         
         # Configure connection limits
@@ -178,13 +179,14 @@ class NEC70TextChunker:
 
     def _get_enhanced_system_prompt(self) -> str:
         """
-        Generate an enhanced system prompt for GPT with detailed instructions
-        for NEC text processing.
+        Generate an enhanced system prompt for GPT optimized for processing NFPA 70 
+        electrical code text with OCR errors.
         """
         categories = ", ".join(self.CONTEXT_MAPPING.keys())
         
         return f"""You are a specialized electrical code analyzer for NFPA 70 (National Electrical Code).
-Your task is to process raw text from the NEC and extract structured information while cleaning OCR errors.
+Your task is to process raw text from the NEC that contains OCR errors and extract structured information
+while preserving ALL technical content.
 
 # Important: Return your output as a JSON object with a 'chunks' array
 # containing all processed chunks, like this:
@@ -202,21 +204,54 @@ Your task is to process raw text from the NEC and extract structured information
   ]
 }}
 
+CRITICAL REQUIREMENTS:
+1. DO NOT summarize or compress the content. Preserve ALL original text.
+2. ENSURE every chunk has complete metadata (article_number, section_number, context_tags).
+3. If you're uncertain about metadata, make your best guess rather than returning null values.
+4. Preserve ALL measurements, values, and technical requirements exactly as they appear.
+
 For each chunk of text, analyze it carefully to identify:
 1. Article number and title (e.g., "ARTICLE 110 - Requirements for Electrical Installations")
 2. Section number and title (e.g., "110.12 Mechanical Execution of Work")
 3. Technical context - identify which categories apply from: {categories}
 4. Referenced sections - any other NEC sections mentioned (e.g., "as required in 230.70")
 
-Clean the text by:
-- Correcting obvious OCR errors (e.g., "l00 amperes" should be "100 amperes")
-- Maintaining proper formatting including paragraph breaks
-- Preserving section numbering and lettering
-- Preserving lists and indentation when present
+Specific document structure elements to recognize:
+1. EXCEPTIONS - These are important elements that begin with "Exception:" or "Exception No. X:"
+2. INFORMATIONAL NOTES - These provide additional context and begin with "Informational Note:"
+3. LISTS - Numbered or lettered lists of requirements
+
+Clean the text by correcting these common OCR errors:
+- Replace "l00" with "100" (lowercase L to numeral 1)
+- Fix "de\\1f'.E" and similar artifacts to "DEVICE"
+- Correct "Pt:LL" to "PULL"
+- Fix "A.'ID" to "AND"
+- Correct spacing issues between words
+- Join hyphenated words split across lines
+
+Properly format:
+- Keep paragraph breaks intact
+- Preserve section numbering exactly (e.g., "314.23(B)(1)")
+- Maintain indentation patterns
+- Keep measurements in their original format (e.g., "900 mm (3 ft)")
+
+Special instructions for handling article/section continuations:
+1. When processing a chunk that doesn't explicitly mention an article or section number,
+   look for contextual clues to determine which article or section it belongs to:
+   - Check for numbering patterns in the text (e.g., subsections like "(1)", "(2)", "(3)")
+   - Look for references to earlier parts of the same section
+   - Check for continuation language like "continued" or text that begins mid-sentence
+
+2. When you identify a continuation chunk, use the most recent article_number and 
+   section_number values, and add a note in the content field like:
+   "[Continuation of Article 110, Section 110.12]" at the beginning.
+
+3. For very long articles or sections that span multiple chunks, ensure metadata 
+   consistency across all related chunks rather than leaving fields blank.
 
 For each text chunk, return a JSON object with:
 {{
-  "content": string,       # The cleaned, corrected text
+  "content": string,       # The cleaned, corrected text with ALL technical content preserved
   "article_number": string,  # Just the number (e.g., "110")
   "article_title": string,   # Just the title (e.g., "Requirements for Electrical Installations")
   "section_number": string,  # Full section number if present (e.g., "110.12")
@@ -225,9 +260,46 @@ For each text chunk, return a JSON object with:
   "related_sections": string[]  # Referenced code sections (e.g., ["230.70", "408.36"])
 }}
 
-If an article or section cannot be identified, use null for those fields.
-If the text is unintelligible or severely corrupted, do your best to reconstruct it based on context.
+IMPORTANT: 
+- Never drop any content, even if it seems redundant.
+- Never convert measurements to different units.
+- Preserve all technical specifications exactly as written.
+- If you can't determine a section number with certainty, use the most recent section number from context.
 """
+
+    async def _process_chunk_batch_with_timeout(self, chunks: Sequence[str], batch_index: int, timeout=25.0) -> Tuple[List[Dict], Dict[str, Any]]:
+        """Process batch with a specific timeout, splitting if needed."""
+        try:
+            return await asyncio.wait_for(
+                self._process_chunk_batch(chunks, batch_index),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Batch {batch_index} timed out - splitting into smaller batches")
+            if len(chunks) <= 2:
+                # If batch is already small, retry once with extended timeout
+                return await asyncio.wait_for(
+                    self._process_chunk_batch(chunks, batch_index),
+                    timeout=timeout * 1.5
+                )
+            # Split the batch and process separately
+            mid = len(chunks) // 2
+            results1, meta1 = await self._process_chunk_batch(chunks[:mid], f"{batch_index}_1")
+            results2, meta2 = await self._process_chunk_batch(chunks[mid:], f"{batch_index}_2")
+            # Combine results
+            combined_results = results1 + results2
+            combined_meta = {
+                "batch_index": batch_index,
+                "chunk_count": len(chunks),
+                "success": meta1["success"] and meta2["success"],
+                "processing_time": meta1.get("processing_time", 0) + meta2.get("processing_time", 0),
+                "tokens": {
+                    "prompt": meta1.get("tokens", {}).get("prompt", 0) + meta2.get("tokens", {}).get("prompt", 0),
+                    "completion": meta1.get("tokens", {}).get("completion", 0) + meta2.get("tokens", {}).get("completion", 0),
+                    "total": meta1.get("tokens", {}).get("total", 0) + meta2.get("tokens", {}).get("total", 0)
+                }
+            }
+            return combined_results, combined_meta
 
     async def _process_chunk_batch(
         self, 
@@ -257,6 +329,10 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
             "retry_count": 0,
             "tokens": {"prompt": 0, "completion": 0, "total": 0}
         }
+        
+        # Log first 100 chars of each chunk to track content
+        chunk_previews = [f"{i}: {chunk[:100]}..." for i, chunk in enumerate(chunks)]
+        self.logger.debug(f"Batch {batch_index} input previews:\n" + "\n".join(chunk_previews))
         
         try:
             async for attempt in AsyncRetrying(
@@ -347,11 +423,24 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
                                     f"GPT returned {len(chunks_result)} chunks but expected {len(chunks)} "
                                     f"in batch {batch_index}"
                                 )
-                                # Pad with empty results if needed
+                                # Pad with empty dictionaries if needed
                                 while len(chunks_result) < len(chunks):
                                     chunks_result.append({})
                                 # Truncate if too many
                                 chunks_result = chunks_result[:len(chunks)]
+                            
+                            # Validate results and find issues
+                            issues = self._validate_chunk_results(chunks_result, chunks, batch_index)
+                            
+                            # If we have issues, retry problematic chunks
+                            if issues:
+                                self.logger.info(f"Batch {batch_index}: Found {len(issues)} problematic chunks to retry")
+                                retry_results = await self._retry_problematic_chunks(issues, chunks, batch_index)
+                                
+                                # Replace problematic chunks with retry results
+                                for i, idx in enumerate(issues):
+                                    if i < len(retry_results) and retry_results[i]:
+                                        chunks_result[idx] = retry_results[i]
                             
                             metadata["success"] = True
                             metadata["processing_time"] = time.time() - attempt_start
@@ -402,6 +491,78 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
         metadata["processing_time"] = time.time() - batch_start
         return [{} for _ in chunks], metadata
 
+    def _validate_chunk_results(self, chunks_result: List[Dict], original_chunks: Sequence[str], batch_index: int) -> List[int]:
+        """Validate chunk results and mark issues for potential reprocessing."""
+        issues = []
+        
+        # Check for missing chunks
+        if len(chunks_result) != len(original_chunks):
+            self.logger.warning(f"Batch {batch_index}: Expected {len(original_chunks)} chunks, got {len(chunks_result)}")
+            # Pad with empty dictionaries if needed
+            while len(chunks_result) < len(original_chunks):
+                chunks_result.append({})
+        
+        # Check for empty or invalid chunks
+        for i, result in enumerate(chunks_result):
+            if not result or not result.get("content"):
+                self.logger.warning(f"Batch {batch_index}, Chunk {i}: Empty or missing content")
+                issues.append(i)
+            elif not result.get("context_tags"):
+                self.logger.warning(f"Batch {batch_index}, Chunk {i}: Missing context tags")
+                issues.append(i)
+            elif not result.get("article_number"):
+                self.logger.warning(f"Batch {batch_index}, Chunk {i}: Missing article number")
+                issues.append(i)
+        
+        return issues
+
+    async def _retry_problematic_chunks(self, issues: List[int], original_chunks: Sequence[str], batch_index: int) -> List[Dict]:
+        """Retry processing for problematic chunks individually."""
+        retry_results = []
+        
+        for chunk_idx in issues:
+            if chunk_idx >= len(original_chunks):
+                continue
+                
+            self.logger.info(f"Retrying problematic chunk {batch_index}_{chunk_idx}")
+            # Process single chunk with more detailed instructions
+            retry_text = f"CRITICAL REANALYSIS NEEDED for this text chunk. Preserve ALL content and ensure metadata is complete: {original_chunks[chunk_idx]}"
+            
+            # Use slightly different prompt for retry
+            retry_system_prompt = self._get_enhanced_system_prompt() + "\nThis is a RETRY of a problematic chunk. Complete metadata is REQUIRED."
+            
+            # Process with extended timeout
+            try:
+                response = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": retry_system_prompt},
+                        {"role": "user", "content": retry_text}
+                    ],
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                    timeout=45.0  # Extended timeout for retry
+                )
+                
+                # Parse result
+                json_content = response.choices[0].message.content
+                result = json.loads(json_content)
+                
+                # Normalize to expected format
+                if "chunks" in result and isinstance(result["chunks"], list) and len(result["chunks"]) > 0:
+                    retry_results.append(result["chunks"][0])
+                elif "content" in result:
+                    retry_results.append(result)
+                else:
+                    self.logger.error(f"Retry for chunk {batch_index}_{chunk_idx} failed: Invalid format")
+                    retry_results.append({})
+                    
+            except Exception as e:
+                self.logger.error(f"Retry for chunk {batch_index}_{chunk_idx} failed: {str(e)}")
+                retry_results.append({})
+        
+        return retry_results
+
     async def process_chunks_async(self, chunks: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
         """
         Process all chunks with parallel batch processing and comprehensive metrics.
@@ -435,41 +596,54 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
             # Process in parallel with controlled concurrency
             all_processed_chunks = []
             
-            # Process batches in sets with controlled concurrency
-            for batch_set_idx in range(0, len(sub_batches), self.max_concurrent_batches):
-                batch_set = sub_batches[batch_set_idx:batch_set_idx + self.max_concurrent_batches]
-                batch_set_start = time.time()
+            # Add rich progress bar
+            with Progress(
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                "[progress.percentage]{task.percentage:>3.0f}%",
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                overall_task = progress.add_task(f"Processing {len(chunks)} chunks", total=len(chunks))
                 
-                # Create tasks for this set of batches
-                tasks = []
-                for i, batch_slice in enumerate(batch_set):
-                    batch_idx = batch_set_idx + i
-                    tasks.append(asyncio.create_task(
-                        self._process_chunk_batch(batch_slice, batch_idx)
-                    ))
-                
-                # Wait for all tasks in this set to complete
-                batch_results = await asyncio.gather(*tasks, return_exceptions=False)
-                batch_set_time = time.time() - batch_set_start
-                
-                # Extract the results and metadata
-                for i, (batch_chunks, batch_meta) in enumerate(batch_results):
-                    batch_idx = batch_set_idx + i
-                    process_metadata["batches"].append(batch_meta)
-                    all_processed_chunks.extend(batch_chunks)
+                # Process batches in sets with controlled concurrency
+                for batch_set_idx in range(0, len(sub_batches), self.max_concurrent_batches):
+                    batch_set = sub_batches[batch_set_idx:batch_set_idx + self.max_concurrent_batches]
+                    batch_set_start = time.time()
                     
-                    # Log summary for this batch
-                    success_status = "✓" if batch_meta["success"] else "✗"
+                    # Create tasks for this set of batches
+                    tasks = []
+                    for i, batch_slice in enumerate(batch_set):
+                        batch_idx = batch_set_idx + i
+                        tasks.append(asyncio.create_task(
+                            self._process_chunk_batch_with_timeout(batch_slice, batch_idx)
+                        ))
+                    
+                    # Wait for all tasks in this set to complete
+                    batch_results = await asyncio.gather(*tasks, return_exceptions=False)
+                    batch_set_time = time.time() - batch_set_start
+                    
+                    # Extract the results and metadata
+                    for i, (batch_chunks, batch_meta) in enumerate(batch_results):
+                        batch_idx = batch_set_idx + i
+                        process_metadata["batches"].append(batch_meta)
+                        all_processed_chunks.extend(batch_chunks)
+                        
+                        # Log summary for this batch
+                        success_status = "✓" if batch_meta["success"] else "✗"
+                        self.logger.info(
+                            f"Batch {batch_idx}/{len(sub_batches)} {success_status} "
+                            f"({len(batch_chunks)} chunks) in {batch_meta.get('processing_time', 0):.2f}s"
+                        )
+                    
+                    # Update progress bar
+                    progress.update(overall_task, advance=len(batch_set) * self.batch_size)
+                    
+                    # Log summary for this set of batches
                     self.logger.info(
-                        f"Batch {batch_idx}/{len(sub_batches)} {success_status} "
-                        f"({len(batch_chunks)} chunks) in {batch_meta.get('processing_time', 0):.2f}s"
+                        f"Completed batch set {batch_set_idx//self.max_concurrent_batches + 1} "
+                        f"({len(batch_set)}/{len(sub_batches)} batches) in {batch_set_time:.2f}s"
                     )
-                
-                # Log summary for this set of batches
-                self.logger.info(
-                    f"Completed batch set {batch_set_idx//self.max_concurrent_batches + 1} "
-                    f"({len(batch_set)}/{len(sub_batches)} batches) in {batch_set_time:.2f}s"
-                )
             
             # Calculate overall success rate
             successful_batches = sum(1 for meta in process_metadata["batches"] if meta["success"])
@@ -496,16 +670,22 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
 
     def _extract_raw_chunks(self, pages_text: Dict[int, str]) -> List[str]:
         """
-        Extract raw text chunks from the input document by identifying article and section breaks.
+        Extract raw text chunks from the input document by identifying article and section breaks
+        with improved context tracking for article and section continuations.
         
         Args:
             pages_text: Dictionary mapping page numbers to text content
             
         Returns:
-            List of raw text chunks
+            List of raw text chunks with context preservation
         """
         with self.monitor.measure("extract_raw_chunks", page_count=len(pages_text)) as metrics:
             raw_chunks = []
+            current_article = None
+            current_article_title = None
+            current_section = None
+            current_section_title = None
+            max_chunk_size = 4000  # Adjust this value based on your token limits
             
             # Process pages in numerical order
             min_page = min(pages_text.keys()) if pages_text else 0
@@ -516,24 +696,69 @@ If the text is unintelligible or severely corrupted, do your best to reconstruct
                 lines = text.split('\n')
                 current_chunk = []
                 
-                # Extract chunks with logical breaks at articles and sections
                 for line in lines:
                     line_stripped = line.strip()
                     if not line_stripped:
                         continue
 
-                    # Start a new chunk at article or section boundary
-                    if (re.search(r'ARTICLE\s+\d+', line_stripped, re.IGNORECASE) or 
-                        re.search(r'^\d+\.\d+\s+[A-Z]', line_stripped)):
+                    # Detect article headers
+                    article_match = re.search(r'ARTICLE\s+(\d+)(?:\s*-\s*(.+))?', line_stripped, re.IGNORECASE)
+                    if article_match:
+                        # Save previous chunk if exists
                         if current_chunk:
-                            raw_chunks.append(' '.join(current_chunk))
+                            chunk_text = ' '.join(current_chunk)
+                            raw_chunks.append(chunk_text)
+                        
+                        # Update article tracking
+                        current_article = article_match.group(1)
+                        if article_match.group(2):  # If title is captured
+                            current_article_title = article_match.group(2).strip()
+                        
                         current_chunk = [line]
+                        self.logger.debug(f"Detected Article {current_article}: {current_article_title}")
+                        continue
+                    
+                    # Detect section headers
+                    section_match = re.search(r'^(\d+\.\d+)\s+([A-Z].*?)\.', line_stripped)
+                    if section_match:
+                        # Save previous chunk if exists
+                        if current_chunk:
+                            chunk_text = ' '.join(current_chunk)
+                            raw_chunks.append(chunk_text)
+                        
+                        # Update section tracking
+                        current_section = section_match.group(1)
+                        current_section_title = section_match.group(2).strip()
+                        
+                        current_chunk = [line]
+                        self.logger.debug(f"Detected Section {current_section}: {current_section_title}")
+                        continue
+                    
+                    # Handle chunk size limit to avoid excessive token usage
+                    if current_chunk and len(' '.join(current_chunk)) > max_chunk_size:
+                        chunk_text = ' '.join(current_chunk)
+                        raw_chunks.append(chunk_text)
+                        
+                        # Start new chunk with context prefix for continuations
+                        context_prefix = ""
+                        if current_article:
+                            if current_section:
+                                context_prefix = f"[Continuation of Article {current_article}, Section {current_section}] "
+                            else:
+                                context_prefix = f"[Continuation of Article {current_article}] "
+                        
+                        current_chunk = [context_prefix + line]
+                        self.logger.debug(f"Created continuation chunk with prefix: {context_prefix}")
                     else:
                         current_chunk.append(line)
                 
                 # Add the last chunk from the page
                 if current_chunk:
                     raw_chunks.append(' '.join(current_chunk))
+            
+            # Log summary
+            self.logger.info(f"Extracted {len(raw_chunks)} raw chunks from {len(pages_text)} pages")
+            self.logger.debug(f"Article tracking: last article={current_article}, last section={current_section}")
             
             metrics.metadata.update({"chunk_count": len(raw_chunks)})
             return raw_chunks
@@ -616,3 +841,6 @@ async def chunk_nfpa70_content(text: str, openai_api_key: Optional[str] = None) 
         chunks = await chunker.chunk_nfpa70_content(pages_text)
     
         return [chunk.to_dict() for chunk in chunks]
+
+# For backward compatibility with existing code
+ElectricalCodeChunker = NEC70TextChunker
