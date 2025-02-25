@@ -48,6 +48,87 @@ class BatchProcessingError(ChunkerError):
         self.retry_count = retry_count
 
 
+class ChunkCache:
+    """
+    Simple cache for storing and retrieving processed chunks to avoid redundant API calls.
+    """
+    def __init__(self, max_size: int = 1000):
+        """Initialize the chunk cache with a maximum size."""
+        self.cache: Dict[str, Dict] = {}
+        self.max_size = max_size
+        self.hits = 0
+        self.misses = 0
+        self.logger = logger.bind(context="chunk_cache")
+        self.logger.info(f"Initialized chunk cache with max_size={max_size}")
+        
+    def get(self, chunk_text: str) -> Optional[Dict]:
+        """
+        Get a processed chunk from the cache.
+        
+        Args:
+            chunk_text: The raw text of the chunk to look up
+            
+        Returns:
+            The cached processed chunk or None if not found
+        """
+        # Use a hash of the chunk text as the key
+        key = self._get_cache_key(chunk_text)
+        result = self.cache.get(key)
+        
+        if result:
+            self.hits += 1
+            self.logger.debug(f"Cache hit ({self.hits}/{self.hits+self.misses})")
+        else:
+            self.misses += 1
+            self.logger.debug(f"Cache miss ({self.misses}/{self.hits+self.misses})")
+            
+        return result
+        
+    def put(self, chunk_text: str, processed_chunk: Dict) -> None:
+        """
+        Store a processed chunk in the cache.
+        
+        Args:
+            chunk_text: The raw text of the chunk
+            processed_chunk: The processed chunk data
+        """
+        # Use a hash of the chunk text as the key
+        key = self._get_cache_key(chunk_text)
+        
+        # If cache is full, remove oldest entry
+        if len(self.cache) >= self.max_size:
+            oldest_key = next(iter(self.cache))
+            del self.cache[oldest_key]
+            self.logger.debug(f"Cache full, removed oldest entry")
+            
+        self.cache[key] = processed_chunk
+        self.logger.debug(f"Added entry to cache (size: {len(self.cache)})")
+        
+    def clear(self) -> None:
+        """Clear the cache."""
+        self.cache.clear()
+        self.logger.info("Cache cleared")
+        
+    def _get_cache_key(self, chunk_text: str) -> str:
+        """Generate a cache key from chunk text."""
+        # Use a simple hash of the first 100 chars + length as the key
+        # This is faster than hashing the entire text but still reasonably unique
+        return f"{hash(chunk_text[:100])}-{len(chunk_text)}"
+        
+    def get_stats(self) -> Dict[str, Any]:
+        """Get cache statistics."""
+        total = self.hits + self.misses
+        hit_rate = (self.hits / total) * 100 if total > 0 else 0
+        
+        return {
+            "size": len(self.cache),
+            "max_size": self.max_size,
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": hit_rate
+        }
+
+
 class NEC70TextChunker:
     """
     Enhanced chunker for NFPA 70 (NEC) text with optimized GPT-based processing.
@@ -94,10 +175,12 @@ class NEC70TextChunker:
         self,
         openai_api_key: Optional[str] = None,
         model: str = "gpt-4o-mini",
-        batch_size: int = 8,  # Increased from 5 to 8
-        max_concurrent_batches: int = 3,  # Increased from 2 to 3
-        timeout: float = 120.0,
-        max_retries: int = 5
+        batch_size: int = 6,  # Reduced from 8 to 6 to minimize timeouts
+        max_concurrent_batches: int = 3,  # Increased from 2 to 3 for more parallelism
+        timeout: float = 90.0,  # Reduced from 120.0 for faster timeout detection
+        max_retries: int = 3,  # Reduced from 5 to 3 for faster failure recovery
+        enable_cache: bool = True,  # Enable caching by default
+        enable_ocr_cleanup: bool = True  # Enable OCR cleanup by default
     ):
         """Initialize the chunker with configuration parameters."""
         self.logger = logger.bind(context="chunker")
@@ -105,6 +188,7 @@ class NEC70TextChunker:
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        self.enable_ocr_cleanup = enable_ocr_cleanup
         
         # Batch processing configuration
         self.batch_size = batch_size
@@ -114,6 +198,10 @@ class NEC70TextChunker:
         # Initialize tracking components
         self.token_usage = TokenUsageMetrics()
         self.monitor = PerformanceMonitor("NEC70TextChunker")
+        
+        # Initialize caching system
+        self.enable_cache = enable_cache
+        self.cache = ChunkCache() if enable_cache else None
         
         # Initialize as None, will be set in async context
         self.http_client: Optional[httpx.AsyncClient] = None

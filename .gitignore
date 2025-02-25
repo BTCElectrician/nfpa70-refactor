@@ -69,3 +69,18 @@ test_output/raw_page_65.txt
 test_output/raw_page_63.txt
 test_output/chunking_differences.txt
 test_output/chunk_metadata.json
+test_output/test_20250225_115917/chunk_metadata.json
+test_output/test_20250225_115917/chunking_differences.txt
+test_output/test_20250225_115917/final_output.json
+test_output/test_20250225_115917/pre_chunking_content.txt
+
+# Test output directories and files
+test_output/
+**/test_*/
+**/raw_page_*.txt
+**/pre_chunking_content.txt
+**/post_chunking_content.txt
+**/chunking_differences.txt
+**/chunk_metadata.json
+**/final_output.json
+**/test_metrics.json

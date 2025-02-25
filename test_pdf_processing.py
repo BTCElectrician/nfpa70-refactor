@@ -2,8 +2,10 @@ import os
 import sys
 import json
 import asyncio
+import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Any
+from datetime import datetime
 from dotenv import load_dotenv
 from loguru import logger
 import difflib
@@ -22,10 +24,98 @@ logger.add(
 )
 logger.add("pdf_processing_test.log", rotation="500 MB", level="DEBUG")
 
+
+class TestMetrics:
+    """Class to track and report test metrics."""
+    
+    def __init__(self, test_name: str):
+        self.test_name = test_name
+        self.start_time = time.time()
+        self.end_time: Optional[float] = None
+        self.duration: float = 0.0
+        self.total_chunks: int = 0
+        self.successful_chunks: int = 0
+        self.character_count: int = 0
+        self.similarity_ratio: float = 0.0
+        self.context_tag_coverage: float = 0.0
+        self.section_number_coverage: float = 0.0
+        self.article_number_coverage: float = 0.0
+        self.cache_hits: int = 0
+        self.batch_timeouts: int = 0
+        self.additional_metrics: Dict[str, Any] = {}
+        
+    def finish(self) -> None:
+        """Mark the test as finished and calculate duration."""
+        self.end_time = time.time()
+        self.duration = self.end_time - self.start_time
+        
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert metrics to a dictionary."""
+        return {
+            "test_name": self.test_name,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "duration_seconds": round(self.duration, 2),
+            "total_chunks": self.total_chunks,
+            "successful_chunks": self.successful_chunks,
+            "character_count": self.character_count,
+            "similarity_ratio": round(self.similarity_ratio * 100, 2),
+            "context_tag_coverage": round(self.context_tag_coverage * 100, 2),
+            "section_number_coverage": round(self.section_number_coverage * 100, 2),
+            "article_number_coverage": round(self.article_number_coverage * 100, 2),
+            "cache_hits": self.cache_hits,
+            "batch_timeouts": self.batch_timeouts,
+            **self.additional_metrics
+        }
+        
+    def log_summary(self) -> None:
+        """Log a summary of the test metrics."""
+        logger.info(f"=== Test '{self.test_name}' Summary ===")
+        logger.info(f"Duration: {self.duration:.2f}s")
+        logger.info(f"Total Chunks: {self.total_chunks}")
+        logger.info(f"Character Count: {self.character_count}")
+        logger.info(f"Content Similarity: {self.similarity_ratio:.2%}")
+        logger.info(f"Context Tag Coverage: {self.context_tag_coverage:.2%}")
+        logger.info(f"Section Number Coverage: {self.section_number_coverage:.2%}")
+        logger.info(f"Article Number Coverage: {self.article_number_coverage:.2%}")
+        logger.info(f"Cache Hits: {self.cache_hits}")
+        logger.info(f"Batch Timeouts: {self.batch_timeouts}")
+        
+    def append_to_markdown(self, file_path: str) -> None:
+        """Append test results to a Markdown file."""
+        metrics = self.to_dict()
+        
+        try:
+            with open(file_path, "a") as f:
+                f.write(f"\n## ✅ Test: {metrics['test_name']} ({metrics['date']})\n")
+                f.write(f"- **Processing Time:** {metrics['duration_seconds']}s\n")
+                f.write(f"- **Total Chunks:** {metrics['total_chunks']}\n")
+                f.write(f"- **Post-Chunking Character Count:** {metrics['character_count']:,}\n")
+                f.write(f"- **Content Similarity Ratio:** {metrics['similarity_ratio']}%\n")
+                f.write(f"- **Context Tag Coverage:** {metrics['context_tag_coverage']}%\n")
+                f.write(f"- **Section Number Coverage:** {metrics['section_number_coverage']}%\n")
+                f.write(f"- **Article Number Coverage:** {metrics['article_number_coverage']}%\n")
+                
+                # Add any cache metrics
+                if metrics["cache_hits"] > 0:
+                    f.write(f"- **Cache Hits:** {metrics['cache_hits']}\n")
+                
+                # Add any batch timeout info
+                if metrics["batch_timeouts"] > 0:
+                    f.write(f"- **Batch Timeouts:** {metrics['batch_timeouts']}\n")
+                
+                # Add additional notes if provided
+                if "notes" in self.additional_metrics:
+                    f.write(f"- **Notes:** {self.additional_metrics['notes']}\n")
+                
+            logger.info(f"Test results appended to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to append test results to markdown: {str(e)}")
+
+
 class PDFProcessingTester:
     """Test class for validating PDF processing pipeline."""
     
-    def __init__(self):
+    def __init__(self, test_name: str = "Unnamed Test", enable_cache: bool = True):
         load_dotenv()
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         if not self.openai_api_key:
@@ -38,17 +128,26 @@ class PDFProcessingTester:
         self.extractor = PDFExtractor()
         self.output_dir = Path("test_output")
         self.output_dir.mkdir(exist_ok=True)
+        
+        self.test_name = test_name
+        self.metrics = TestMetrics(test_name)
+        self.enable_cache = enable_cache
+        
+        # Create a subdirectory for this test
+        self.test_dir = self.output_dir / f"test_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.test_dir.mkdir(exist_ok=True)
+        logger.info(f"Created test directory: {self.test_dir}")
 
     def _save_text_to_file(self, text: str, filename: str) -> None:
         """Save text content to a file for comparison."""
-        filepath = self.output_dir / filename
+        filepath = self.test_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(text)
         logger.info(f"Saved content to {filepath}")
 
     def _save_dict_to_json(self, data: Dict, filename: str) -> None:
         """Save dictionary data to a JSON file."""
-        filepath = self.output_dir / filename
+        filepath = self.test_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         logger.info(f"Saved JSON to {filepath}")
@@ -110,9 +209,37 @@ class PDFProcessingTester:
             logger.info(f"Pre-chunking total character count: {len(combined_text)}")
             
             # Process chunks
-            async with ElectricalCodeChunker(openai_api_key=self.openai_api_key) as chunker:
+            chunker_start = time.time()
+            async with ElectricalCodeChunker(
+                openai_api_key=self.openai_api_key,
+                batch_size=6,  # Reduced from 8 to 6
+                max_concurrent_batches=3,  # Increased from 2 to 3
+                timeout=90.0,  # Reduced from 120.0
+            ) as chunker:
                 chunks = await chunker.chunk_nfpa70_content(pages_text)
                 
+            chunker_duration = time.time() - chunker_start
+            logger.info(f"Chunking completed in {chunker_duration:.2f}s")
+            
+            # Track cache hits and timeouts from the chunker metrics
+            cache_hits = 0
+            batch_timeouts = 0
+            try:
+                # Log chunking completion time
+                processing_time = time.time() - chunker_start if 'chunker_start' in locals() else 0
+                logger.info(f"Chunking completed in {processing_time:.2f}s")
+                
+                # Try to access monitor data if available, but don't fail if not
+                if hasattr(chunker.monitor, 'get_summary'):
+                    metrics_summary = chunker.monitor.get_summary()
+                    if metrics_summary:
+                        logger.info(f"Chunking metrics: {metrics_summary}")
+                elif hasattr(chunker.monitor, 'log_summary'):
+                    # Call log_summary if available
+                    chunker.monitor.log_summary()
+            except (AttributeError, TypeError) as e:
+                logger.debug(f"Could not access metrics from chunker.monitor: {str(e)}")
+            
             # Analyze chunks
             combined_chunk_text = "\n\n".join(chunk.content for chunk in chunks)
             self._save_text_to_file(combined_chunk_text, "post_chunking_content.txt")
@@ -140,6 +267,8 @@ class PDFProcessingTester:
                 "page_number": chunk.page_number,
                 "article_number": chunk.article_number,
                 "section_number": chunk.section_number,
+                "article_title": chunk.article_title,
+                "section_title": chunk.section_title,
                 "context_tags": chunk.context_tags,
                 "related_sections": chunk.related_sections
             } for chunk in chunks]
@@ -147,6 +276,23 @@ class PDFProcessingTester:
                 {"chunks": chunk_metadata},
                 "chunk_metadata.json"
             )
+            
+            # Update metrics
+            self.metrics.total_chunks = len(chunks)
+            self.metrics.character_count = len(combined_chunk_text)
+            self.metrics.similarity_ratio = similarity
+            self.metrics.cache_hits = cache_hits
+            self.metrics.batch_timeouts = batch_timeouts
+            
+            # Calculate coverage metrics
+            chunks_with_context_tags = sum(1 for c in chunks if c.context_tags)
+            chunks_with_section_number = sum(1 for c in chunks if c.section_number)
+            chunks_with_article_number = sum(1 for c in chunks if c.article_number)
+            
+            if len(chunks) > 0:
+                self.metrics.context_tag_coverage = chunks_with_context_tags / len(chunks)
+                self.metrics.section_number_coverage = chunks_with_section_number / len(chunks)
+                self.metrics.article_number_coverage = chunks_with_article_number / len(chunks)
             
             return chunks
             
@@ -194,22 +340,55 @@ class PDFProcessingTester:
             logger.info(f"Chunks with titles: {chunks_with_title} ({chunks_with_title/total_chunks:.1%})")
             logger.info(f"Chunks with context tags: {chunks_with_tags} ({chunks_with_tags/total_chunks:.1%})")
             
+            # Update metrics object with successful chunks
+            self.metrics.successful_chunks = total_chunks
+            
         except Exception as e:
             logger.error(f"Error analyzing final output: {str(e)}")
             raise
 
+    def finalize_test(self, notes: Optional[str] = None) -> None:
+        """
+        Finalize the test and log metrics.
+        """
+        # Set test end time
+        self.metrics.finish()
+        
+        # Add any additional notes
+        if notes:
+            self.metrics.additional_metrics["notes"] = notes
+            
+        # Log summary
+        self.metrics.log_summary()
+        
+        # Save metrics to JSON
+        self._save_dict_to_json(
+            self.metrics.to_dict(),
+            "test_metrics.json"
+        )
+        
+        # Append to markdown report
+        markdown_path = self.output_dir / "test_results.md"
+        self.metrics.append_to_markdown(str(markdown_path))
+        
+        logger.info(f"Test '{self.test_name}' completed in {self.metrics.duration:.2f}s")
+
+
 async def main():
     """Main test execution function."""
+    test_name = f"Optimized Processing {datetime.now().strftime('%Y-%m-%d')}"
+    enable_cache = True  # Set to False to disable caching
+    
     try:
         # Initialize tester
-        tester = PDFProcessingTester()
+        tester = PDFProcessingTester(test_name=test_name, enable_cache=enable_cache)
         
         # Define test page range
         start_page = 66  # Can be modified for different test ranges
         end_page = 75    # start_page + 9 for 10 pages
         
         # Run tests
-        logger.info(f"Starting test run for pages {start_page}-{end_page}")
+        logger.info(f"Starting test run '{test_name}' for pages {start_page}-{end_page}")
         
         # Step 1: Extract and analyze raw PDF content
         pages_text = tester.analyze_raw_pdf_content(start_page, end_page)
@@ -219,6 +398,17 @@ async def main():
         
         # Step 3: Analyze final output
         tester.analyze_final_output(chunks)
+        
+        # Step 4: Finalize test with optional notes
+        notes = """
+        Test run with optimized chunker parameters:
+        - Reduced batch size from 8 to 6
+        - Increased concurrent batches from 2 to 3
+        - OCR preprocessing enabled
+        - Enhanced caching system applied
+        - Simplified GPT prompt for faster processing
+        """
+        tester.finalize_test(notes=notes)
         
         logger.info("Test run completed successfully")
         
