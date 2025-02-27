@@ -24,7 +24,7 @@ class OCRCleaner:
         model: str = "gpt-4o-mini",
         timeout: float = 90.0,
         max_retries: int = 3,
-        batch_size: int = 3  # Default parallel batch size
+        batch_size: int = 6  # Default parallel batch size
     ):
         """Initialize the OCR cleaner."""
         self.logger = logger.bind(context="ocr_cleaner")

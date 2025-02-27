@@ -213,7 +213,7 @@ class PDFProcessingTester:
             
             # Process cleaning
             cleaner_start = time.time()
-            async with OCRCleaner(openai_api_key=self.openai_api_key) as cleaner:
+            async with OCRCleaner(openai_api_key=self.openai_api_key, batch_size=6) as cleaner:
                 cleaned_pages = await cleaner.clean_document(pages_text)
                 
             cleaner_duration = time.time() - cleaner_start
