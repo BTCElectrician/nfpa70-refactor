@@ -197,6 +197,61 @@ class PDFProcessingTester:
             logger.error(f"Error in PDF extraction: {str(e)}")
             raise
 
+    async def analyze_ocr_cleaning(self, pages_text: Dict[int, str]) -> Dict[int, str]:
+        """
+        Analyze the OCR cleaning process (Phase 1).
+        """
+        logger.info("Starting OCR cleaning analysis")
+        try:
+            # Save pre-cleaning content
+            combined_text = "\n\n".join(pages_text.values())
+            self._save_text_to_file(combined_text, "pre_cleaning_content.txt")
+            logger.info(f"Pre-cleaning total character count: {len(combined_text)}")
+            
+            # Import OCR cleaner
+            from data_processing.ocr_cleaner import OCRCleaner
+            
+            # Process cleaning
+            cleaner_start = time.time()
+            async with OCRCleaner(openai_api_key=self.openai_api_key) as cleaner:
+                cleaned_pages = await cleaner.clean_document(pages_text)
+                
+            cleaner_duration = time.time() - cleaner_start
+            logger.info(f"OCR cleaning completed in {cleaner_duration:.2f}s")
+            
+            # Analyze cleaned pages
+            combined_cleaned_text = "\n\n".join(cleaned_pages.values())
+            self._save_text_to_file(combined_cleaned_text, "post_cleaning_content.txt")
+            logger.info(f"Post-cleaning total character count: {len(combined_cleaned_text)}")
+            
+            # Compare pre and post cleaning content
+            similarity, diffs = self._compare_texts(
+                combined_text,
+                combined_cleaned_text,
+                "pre-cleaning",
+                "post-cleaning"
+            )
+            logger.info(f"Cleaning content similarity ratio: {similarity:.2%}")
+            
+            if diffs:
+                logger.info(f"Found {len(diffs)} differences in cleaning")
+                self._save_text_to_file(
+                    "\n".join(diffs),
+                    "cleaning_differences.txt"
+                )
+            
+            # Update metrics
+            self.metrics.additional_metrics["cleaning_similarity"] = similarity
+            self.metrics.additional_metrics["cleaning_duration"] = cleaner_duration
+            self.metrics.additional_metrics["pre_cleaning_chars"] = len(combined_text)
+            self.metrics.additional_metrics["post_cleaning_chars"] = len(combined_cleaned_text)
+            
+            return cleaned_pages
+                
+        except Exception as e:
+            logger.error(f"Error in OCR cleaning process: {str(e)}")
+            raise
+
     async def analyze_chunking(self, pages_text: Dict[int, str]) -> List[Dict]:
         """
         Analyze the chunking process.
@@ -376,8 +431,8 @@ class PDFProcessingTester:
 
 async def main():
     """Main test execution function."""
-    test_name = f"Optimized Processing {datetime.now().strftime('%Y-%m-%d')}"
-    enable_cache = True  # Set to False to disable caching
+    test_name = f"OCR Cleaning Test {datetime.now().strftime('%Y-%m-%d')}"
+    enable_cache = True
     
     try:
         # Initialize tester
@@ -390,27 +445,22 @@ async def main():
         # Run tests
         logger.info(f"Starting test run '{test_name}' for pages {start_page}-{end_page}")
         
-        # Step 1: Extract and analyze raw PDF content
+        # Step 1: Extract raw PDF content
         pages_text = tester.analyze_raw_pdf_content(start_page, end_page)
         
-        # Step 2: Analyze chunking process
-        chunks = await tester.analyze_chunking(pages_text)
+        # Step 2: Test OCR cleaning process (Phase 1 only)
+        cleaned_pages = await tester.analyze_ocr_cleaning(pages_text)
         
-        # Step 3: Analyze final output
-        tester.analyze_final_output(chunks)
-        
-        # Step 4: Finalize test with optional notes
+        # Step 3: Finalize test with optional notes
         notes = """
-        Test run with optimized chunker parameters:
-        - Reduced batch size from 8 to 6
-        - Increased concurrent batches from 2 to 3
-        - OCR preprocessing enabled
-        - Enhanced caching system applied
-        - Simplified GPT prompt for faster processing
+        Test run for Phase 1: OCR Cleaning
+        - Tests document-level OCR cleaning without chunking
+        - Measures content preservation accuracy
+        - Identifies differences between raw and cleaned text
         """
         tester.finalize_test(notes=notes)
         
-        logger.info("Test run completed successfully")
+        logger.info("Phase 1 test run completed successfully")
         
     except Exception as e:
         logger.error(f"Test run failed: {str(e)}")
