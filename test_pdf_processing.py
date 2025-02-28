@@ -252,6 +252,82 @@ class PDFProcessingTester:
             logger.error(f"Error in OCR cleaning process: {str(e)}")
             raise
 
+    async def analyze_metadata_extraction(self, cleaned_pages: Dict[int, str]) -> List[Dict]:
+        """
+        Analyze the metadata extraction process (Phase 2).
+        """
+        logger.info("Starting metadata extraction analysis")
+        try:
+            # Save cleaned content for reference
+            combined_cleaned_text = "\n\n".join(cleaned_pages.values())
+            self._save_text_to_file(combined_cleaned_text, "input_cleaned_content.txt")
+            
+            # Process chunks
+            chunker_start = time.time()
+            
+            # Import the correct class name for your project
+            from data_processing.text_chunker import ElectricalCodeChunker
+            
+            async with ElectricalCodeChunker(openai_api_key=self.openai_api_key) as chunker:
+                # Use process_cleaned_text if available
+                if hasattr(chunker, 'process_cleaned_text'):
+                    chunks = await chunker.process_cleaned_text(cleaned_pages)
+                else:
+                    # Fallback to original method
+                    chunks = await chunker.chunk_nfpa70_content(cleaned_pages)
+                    
+            chunker_duration = time.time() - chunker_start
+            logger.info(f"Metadata extraction completed in {chunker_duration:.2f}s")
+            
+            # Analyze chunks
+            combined_chunk_text = "\n\n".join(chunk.content for chunk in chunks)
+            self._save_text_to_file(combined_chunk_text, "metadata_extraction_output.txt")
+            logger.info(f"Output content character count: {len(combined_chunk_text)}")
+            
+            # Compare cleaned and chunked content
+            similarity, diffs = self._compare_texts(
+                combined_cleaned_text,
+                combined_chunk_text,
+                "cleaned-text",
+                "chunked-text"
+            )
+            logger.info(f"Metadata extraction content preservation ratio: {similarity:.2%}")
+            
+            if diffs:
+                logger.warning(f"Found {len(diffs)} significant differences after metadata extraction")
+                self._save_text_to_file(
+                    "\n".join(diffs),
+                    "metadata_extraction_differences.txt"
+                )
+            
+            # Update metrics
+            self.metrics.total_chunks = len(chunks)
+            self.metrics.character_count = len(combined_chunk_text)
+            self.metrics.similarity_ratio = similarity
+            self.metrics.additional_metrics["metadata_extraction_duration"] = chunker_duration
+            
+            # Calculate coverage metrics
+            chunks_with_context_tags = sum(1 for c in chunks if c.context_tags)
+            chunks_with_section_number = sum(1 for c in chunks if c.section_number)
+            chunks_with_article_number = sum(1 for c in chunks if c.article_number)
+            
+            if len(chunks) > 0:
+                self.metrics.context_tag_coverage = chunks_with_context_tags / len(chunks)
+                self.metrics.section_number_coverage = chunks_with_section_number / len(chunks)
+                self.metrics.article_number_coverage = chunks_with_article_number / len(chunks)
+                
+                # Log metadata extraction coverage metrics
+                logger.info(f"Metadata extraction coverage metrics:")
+                logger.info(f"  Article number coverage: {self.metrics.article_number_coverage:.2%}")
+                logger.info(f"  Section number coverage: {self.metrics.section_number_coverage:.2%}")
+                logger.info(f"  Context tag coverage: {self.metrics.context_tag_coverage:.2%}")
+            
+            return chunks
+                
+        except Exception as e:
+            logger.error(f"Error in metadata extraction process: {str(e)}")
+            raise
+
     async def analyze_chunking(self, pages_text: Dict[int, str]) -> List[Dict]:
         """
         Analyze the chunking process.
@@ -431,7 +507,7 @@ class PDFProcessingTester:
 
 async def main():
     """Main test execution function."""
-    test_name = f"OCR Cleaning Test {datetime.now().strftime('%Y-%m-%d')}"
+    test_name = f"Metadata Extraction Test {datetime.now().strftime('%Y-%m-%d')}"
     enable_cache = True
     
     try:
@@ -448,19 +524,25 @@ async def main():
         # Step 1: Extract raw PDF content
         pages_text = tester.analyze_raw_pdf_content(start_page, end_page)
         
-        # Step 2: Test OCR cleaning process (Phase 1 only)
+        # Step 2: Run OCR cleaning (Phase 1)
         cleaned_pages = await tester.analyze_ocr_cleaning(pages_text)
         
-        # Step 3: Finalize test with optional notes
+        # Step 3: Test metadata extraction (Phase 2)
+        chunks = await tester.analyze_metadata_extraction(cleaned_pages)
+        
+        # Step 4: Analyze final output
+        tester.analyze_final_output(chunks)
+        
+        # Step 5: Finalize test with optional notes
         notes = """
-        Test run for Phase 1: OCR Cleaning
-        - Tests document-level OCR cleaning without chunking
-        - Measures content preservation accuracy
-        - Identifies differences between raw and cleaned text
+        Test run for Phase 2: Metadata Extraction
+        - Tests extraction of metadata from pre-cleaned text
+        - Measures content preservation during extraction
+        - Analyzes metadata coverage and quality
         """
         tester.finalize_test(notes=notes)
         
-        logger.info("Phase 1 test run completed successfully")
+        logger.info("Phase 2 test run completed successfully")
         
     except Exception as e:
         logger.error(f"Test run failed: {str(e)}")

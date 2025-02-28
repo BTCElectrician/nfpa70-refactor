@@ -355,11 +355,71 @@ IMPORTANT:
 - If you can't determine a section number with certainty, use the most recent section number from context.
 """
 
-    async def _process_chunk_batch_with_timeout(self, chunks: Sequence[str], batch_index: int, timeout=25.0) -> Tuple[List[Dict], Dict[str, Any]]:
+    def _get_metadata_extraction_prompt(self) -> str:
+        """
+        Generate a metadata-focused prompt for GPT optimized for extracting structured metadata
+        from NFPA 70 electrical code text.
+        """
+        categories = ", ".join(self.CONTEXT_MAPPING.keys())
+        
+        return f"""You are a specialized electrical code metadata extractor for NFPA 70 (National Electrical Code).
+Your task is to extract structured metadata from NEC text while preserving the original content.
+
+# Important: Return your output as a JSON object with a 'chunks' array
+# containing all processed chunks, like this:
+{{
+  "chunks": [
+    {{
+      "content": "original text",
+      "article_number": "110",
+      "article_title": "title",
+      ...other fields...
+    }},
+    {{
+      ...next chunk...
+    }}
+  ]
+}}
+
+CRITICAL REQUIREMENTS:
+1. PRESERVE the original text exactly in the "content" field.
+2. FOCUS on accurate metadata extraction (article_number, section_number, context_tags).
+3. If you're uncertain about metadata, make your best guess rather than returning null values.
+
+For each chunk of text, extract the following metadata:
+1. Article number and title (e.g., "ARTICLE 110 - Requirements for Electrical Installations")
+2. Section number and title (e.g., "110.12 Mechanical Execution of Work")
+3. Technical context - identify which categories apply from: {categories}
+4. Referenced sections - any other NEC sections mentioned (e.g., "as required in 230.70")
+
+Special instructions for handling article/section continuations:
+1. When processing a chunk that doesn't explicitly mention an article or section number,
+   look for contextual clues to determine which article or section it belongs to.
+2. When you identify a continuation chunk, use the most recent article_number and 
+   section_number values.
+
+For each text chunk, return a JSON object with:
+{{
+  "content": string,       # The ORIGINAL text preserved exactly as provided
+  "article_number": string,  # Just the number (e.g., "110")
+  "article_title": string,   # Just the title (e.g., "Requirements for Electrical Installations")
+  "section_number": string,  # Full section number if present (e.g., "110.12")
+  "section_title": string,   # Just the section title if present
+  "context_tags": string[],  # Relevant technical categories
+  "related_sections": string[]  # Referenced code sections (e.g., ["230.70", "408.36"])
+}}
+
+IMPORTANT: 
+- Do not modify the original text in the "content" field.
+- Focus on accurate metadata extraction rather than text cleaning.
+- If you can't determine a section number with certainty, use the most recent section number from context.
+"""
+
+    async def _process_chunk_batch_with_timeout(self, chunks: Sequence[str], batch_index: int, timeout=25.0, use_metadata_prompt=False) -> Tuple[List[Dict], Dict[str, Any]]:
         """Process batch with a specific timeout, splitting if needed."""
         try:
             return await asyncio.wait_for(
-                self._process_chunk_batch(chunks, batch_index),
+                self._process_chunk_batch(chunks, batch_index, use_metadata_prompt=use_metadata_prompt),
                 timeout=timeout
             )
         except asyncio.TimeoutError:
@@ -367,13 +427,13 @@ IMPORTANT:
             if len(chunks) <= 2:
                 # If batch is already small, retry once with extended timeout
                 return await asyncio.wait_for(
-                    self._process_chunk_batch(chunks, batch_index),
+                    self._process_chunk_batch(chunks, batch_index, use_metadata_prompt=use_metadata_prompt),
                     timeout=timeout * 1.5
                 )
             # Split the batch and process separately
             mid = len(chunks) // 2
-            results1, meta1 = await self._process_chunk_batch(chunks[:mid], f"{batch_index}_1")
-            results2, meta2 = await self._process_chunk_batch(chunks[mid:], f"{batch_index}_2")
+            results1, meta1 = await self._process_chunk_batch(chunks[:mid], f"{batch_index}_1", use_metadata_prompt=use_metadata_prompt)
+            results2, meta2 = await self._process_chunk_batch(chunks[mid:], f"{batch_index}_2", use_metadata_prompt=use_metadata_prompt)
             # Combine results
             combined_results = results1 + results2
             combined_meta = {
@@ -392,7 +452,8 @@ IMPORTANT:
     async def _process_chunk_batch(
         self, 
         chunks: Sequence[str], 
-        batch_index: int
+        batch_index: int,
+        use_metadata_prompt: bool = False
     ) -> Tuple[List[Dict], Dict[str, Any]]:
         """
         Process multiple chunks in a single GPT call with robust error handling
@@ -401,6 +462,7 @@ IMPORTANT:
         Args:
             chunks: List of text chunks to process
             batch_index: Index of this batch for tracking
+            use_metadata_prompt: Whether to use the metadata-focused prompt
             
         Returns:
             Tuple of (list of processed chunks as dicts, processing metadata)
@@ -439,13 +501,16 @@ IMPORTANT:
                             f"{len(chunks)} chunks"
                         )
                         
-                        # Create chat completion with enhanced system prompt
+                        # Choose the appropriate prompt based on the use_metadata_prompt flag
+                        prompt = self._get_metadata_extraction_prompt() if use_metadata_prompt else self._get_enhanced_system_prompt()
+                        
+                        # Create chat completion with the selected prompt
                         response = await self.client.chat.completions.create(
                             model=self.model,
                             messages=[
                                 {
                                     "role": "system", 
-                                    "content": self._get_enhanced_system_prompt()
+                                    "content": prompt
                                 },
                                 {
                                     "role": "user", 
@@ -523,7 +588,7 @@ IMPORTANT:
                             # If we have issues, retry problematic chunks
                             if issues:
                                 self.logger.info(f"Batch {batch_index}: Found {len(issues)} problematic chunks to retry")
-                                retry_results = await self._retry_problematic_chunks(issues, chunks, batch_index)
+                                retry_results = await self._retry_problematic_chunks(issues, chunks, batch_index, use_metadata_prompt)
                                 
                                 # Replace problematic chunks with retry results
                                 for i, idx in enumerate(issues):
@@ -604,7 +669,13 @@ IMPORTANT:
         
         return issues
 
-    async def _retry_problematic_chunks(self, issues: List[int], original_chunks: Sequence[str], batch_index: int) -> List[Dict]:
+    async def _retry_problematic_chunks(
+        self, 
+        issues: List[int], 
+        original_chunks: Sequence[str], 
+        batch_index: int,
+        use_metadata_prompt: bool = False
+    ) -> List[Dict]:
         """Retry processing for problematic chunks individually."""
         retry_results = []
         
@@ -616,8 +687,11 @@ IMPORTANT:
             # Process single chunk with more detailed instructions
             retry_text = f"CRITICAL REANALYSIS NEEDED for this text chunk. Preserve ALL content and ensure metadata is complete: {original_chunks[chunk_idx]}"
             
-            # Use slightly different prompt for retry
-            retry_system_prompt = self._get_enhanced_system_prompt() + "\nThis is a RETRY of a problematic chunk. Complete metadata is REQUIRED."
+            # Use slightly different prompt for retry, based on the prompt type
+            if use_metadata_prompt:
+                retry_system_prompt = self._get_metadata_extraction_prompt() + "\nThis is a RETRY of a problematic chunk. Complete metadata is REQUIRED."
+            else:
+                retry_system_prompt = self._get_enhanced_system_prompt() + "\nThis is a RETRY of a problematic chunk. Complete metadata is REQUIRED."
             
             # Process with extended timeout
             try:
