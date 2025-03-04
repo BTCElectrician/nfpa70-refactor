@@ -829,6 +829,112 @@ IMPORTANT:
             
             metrics.metadata.update({"success_rate": process_metadata["success_rate"]})
             return all_processed_chunks, process_metadata
+            
+    async def _process_chunks_async_for_metadata(self, chunks: List[str]) -> Tuple[List[Dict], Dict[str, Any]]:
+        """
+        Process all chunks with parallel batch processing specifically for metadata extraction.
+        This is a wrapper around process_chunks_async that sets use_metadata_prompt=True.
+        
+        Args:
+            chunks: List of text chunks to process
+            
+        Returns:
+            Tuple of (processed chunks, processing metadata)
+        """
+        with self.monitor.measure("process_chunks_async_for_metadata", chunk_count=len(chunks)) as metrics:
+            self.logger.info(f"Starting parallel processing of {len(chunks)} chunks for metadata extraction")
+            
+            # Track overall processing
+            process_metadata = {
+                "total_chunks": len(chunks),
+                "start_time": datetime.now().isoformat(),
+                "batches": [],
+                "success_rate": 0,
+                "token_usage": {}
+            }
+            
+            # Create sub-batches
+            sub_batches = []
+            for i in range(0, len(chunks), self.batch_size):
+                batch_slice = chunks[i:i + self.batch_size]
+                sub_batches.append(batch_slice)
+                
+            self.logger.info(f"Split into {len(sub_batches)} batches of up to {self.batch_size} chunks each")
+            
+            # Process in parallel with controlled concurrency
+            all_processed_chunks = []
+            
+            # Add rich progress bar
+            with Progress(
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                "[progress.percentage]{task.percentage:>3.0f}%",
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                overall_task = progress.add_task(f"Extracting metadata from {len(chunks)} chunks", total=len(chunks))
+                
+                # Process batches in sets with controlled concurrency
+                for batch_set_idx in range(0, len(sub_batches), self.max_concurrent_batches):
+                    batch_set = sub_batches[batch_set_idx:batch_set_idx + self.max_concurrent_batches]
+                    batch_set_start = time.time()
+                    
+                    # Create tasks for this set of batches
+                    tasks = []
+                    for i, batch_slice in enumerate(batch_set):
+                        batch_idx = batch_set_idx + i
+                        tasks.append(asyncio.create_task(
+                            self._process_chunk_batch_with_timeout(batch_slice, batch_idx, use_metadata_prompt=True)
+                        ))
+                    
+                    # Wait for all tasks in this set to complete
+                    batch_results = await asyncio.gather(*tasks, return_exceptions=False)
+                    batch_set_time = time.time() - batch_set_start
+                    
+                    # Extract the results and metadata
+                    for i, (batch_chunks, batch_meta) in enumerate(batch_results):
+                        batch_idx = batch_set_idx + i
+                        process_metadata["batches"].append(batch_meta)
+                        all_processed_chunks.extend(batch_chunks)
+                        
+                        # Log summary for this batch
+                        success_status = "✓" if batch_meta["success"] else "✗"
+                        self.logger.info(
+                            f"Batch {batch_idx}/{len(sub_batches)} {success_status} "
+                            f"({len(batch_chunks)} chunks) in {batch_meta.get('processing_time', 0):.2f}s"
+                        )
+                    
+                    # Update progress bar
+                    progress.update(overall_task, advance=len(batch_set) * self.batch_size)
+                    
+                    # Log summary for this set of batches
+                    self.logger.info(
+                        f"Completed metadata extraction batch set {batch_set_idx//self.max_concurrent_batches + 1} "
+                        f"({len(batch_set)}/{len(sub_batches)} batches) in {batch_set_time:.2f}s"
+                    )
+            
+            # Calculate overall success rate
+            successful_batches = sum(1 for meta in process_metadata["batches"] if meta["success"])
+            process_metadata["success_rate"] = (successful_batches / len(process_metadata["batches"])) * 100
+            
+            # Add token usage summary
+            process_metadata["token_usage"] = {
+                "prompt_tokens": self.token_usage.prompt_tokens,
+                "completion_tokens": self.token_usage.completion_tokens,
+                "total_tokens": self.token_usage.total_tokens
+            }
+            
+            # Calculate overall processing time
+            process_metadata["end_time"] = datetime.now().isoformat()
+            process_metadata["duration"] = metrics.duration
+            
+            self.logger.info(
+                f"Completed metadata extraction for {len(chunks)} chunks in {metrics.duration:.2f}s "
+                f"with {process_metadata['success_rate']:.1f}% batch success rate"
+            )
+            
+            metrics.metadata.update({"success_rate": process_metadata["success_rate"]})
+            return all_processed_chunks, process_metadata
 
     def _extract_raw_chunks(self, pages_text: Dict[int, str]) -> List[str]:
         """
@@ -925,6 +1031,72 @@ IMPORTANT:
             metrics.metadata.update({"chunk_count": len(raw_chunks)})
             return raw_chunks
 
+    async def process_cleaned_text(self, cleaned_pages_text: Dict[int, str]) -> List[CodeChunk]:
+        """
+        Process pre-cleaned text into chunks with metadata.
+        
+        This method assumes the text has already been cleaned and normalized,
+        and focuses on identifying logical chunks and extracting metadata.
+        
+        Args:
+            cleaned_pages_text: Dictionary mapping page numbers to cleaned text
+            
+        Returns:
+            List of CodeChunk objects with full metadata
+        """
+        with self.monitor.measure("process_cleaned_text", page_count=len(cleaned_pages_text)) as metrics:
+            chunks = []
+            
+            if not cleaned_pages_text:
+                self.logger.warning("No cleaned pages to process")
+                return chunks
+
+            # Extract raw chunks from the cleaned text
+            raw_chunks = self._extract_raw_chunks(cleaned_pages_text)
+            self.logger.info(f"Extracted {len(raw_chunks)} raw chunks from {len(cleaned_pages_text)} cleaned pages")
+
+            # Process chunks with GPT focused on metadata extraction
+            self.logger.info(f"Processing {len(raw_chunks)} chunks with GPT for metadata extraction")
+            
+            # Process chunks with metadata extraction focus
+            chunk_analyses, process_metadata = await self._process_chunks_async_for_metadata(raw_chunks)
+            
+            # Track pages for default page number assignment
+            min_page = min(cleaned_pages_text.keys()) if cleaned_pages_text else 0
+            
+            # Convert results to CodeChunk objects
+            for i, analysis in enumerate(chunk_analyses):
+                if not analysis:  # Skip empty results
+                    self.logger.debug(f"Skipping empty analysis for chunk {i}")
+                    continue
+                
+                # Default page number as starting page + rough estimate based on chunk index
+                default_page = min_page + (i // 10)
+                
+                try:
+                    chunk = CodeChunk(
+                        content=analysis.get('content', raw_chunks[i]),
+                        page_number=analysis.get('page_number', default_page),
+                        article_number=analysis.get('article_number'),
+                        article_title=analysis.get('article_title'),
+                        section_number=analysis.get('section_number'),
+                        section_title=analysis.get('section_title'),
+                        context_tags=analysis.get('context_tags', []),
+                        related_sections=analysis.get('related_sections', [])
+                    )
+                    chunks.append(chunk)
+                except Exception as e:
+                    self.logger.error(f"Error creating CodeChunk for analysis {i}: {str(e)}")
+                    
+            self.logger.success(f"Successfully processed {len(chunks)} chunks with metadata")
+            metrics.metadata.update({
+                "raw_chunks": len(raw_chunks),
+                "processed_chunks": len(chunks),
+                "token_usage": process_metadata["token_usage"]
+            })
+            
+            return chunks
+            
     async def chunk_nfpa70_content(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
         """
         Process NFPA 70 content into context-aware chunks with comprehensive analysis.
