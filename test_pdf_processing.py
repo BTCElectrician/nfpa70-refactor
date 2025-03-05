@@ -14,6 +14,7 @@ import difflib
 from data_processing.pdf_extractor import PDFExtractor
 from data_processing.text_chunker import ElectricalCodeChunker
 from azure_storage.blob_manager import BlobStorageManager
+from data_processing.models import CodeChunk
 
 # Configure logging
 logger.remove()  # Remove default handler
@@ -504,10 +505,137 @@ class PDFProcessingTester:
         
         logger.info(f"Test '{self.test_name}' completed in {self.metrics.duration:.2f}s")
 
+    async def analyze_two_phase_processing(self, pages_text: Dict[int, str]) -> List[CodeChunk]:
+        """
+        Analyze the complete two-phase processing pipeline.
+        
+        This method combines Phase 1 (OCR cleaning) and Phase 2 (metadata extraction)
+        to test the full processing pipeline.
+        
+        Args:
+            pages_text: Dictionary mapping page numbers to raw text
+            
+        Returns:
+            List of processed code chunks with metadata
+        """
+        logger.info("Starting two-phase processing analysis")
+        try:
+            # Step 1: Save original content
+            combined_text = "\n\n".join(pages_text.values())
+            self._save_text_to_file(combined_text, "pre_processing_content.txt")
+            logger.info(f"Original content character count: {len(combined_text)}")
+            
+            # Step 2: Phase 1 - OCR Cleaning
+            phase1_start = time.time()
+            logger.info("Phase 1: Starting OCR cleaning")
+            
+            from data_processing.ocr_cleaner import OCRCleaner
+            async with OCRCleaner(openai_api_key=self.openai_api_key, batch_size=6) as cleaner:
+                cleaned_pages = await cleaner.clean_document(pages_text)
+                
+            phase1_duration = time.time() - phase1_start
+            logger.info(f"Phase 1: OCR cleaning completed in {phase1_duration:.2f}s")
+            
+            # Save cleaned content
+            combined_cleaned_text = "\n\n".join(cleaned_pages.values())
+            self._save_text_to_file(combined_cleaned_text, "phase1_cleaned_content.txt")
+            logger.info(f"Cleaned content character count: {len(combined_cleaned_text)}")
+            
+            # Step 3: Phase 2 - Metadata Extraction
+            phase2_start = time.time()
+            logger.info("Phase 2: Starting metadata extraction")
+            
+            from data_processing.text_chunker import ElectricalCodeChunker
+            async with ElectricalCodeChunker(openai_api_key=self.openai_api_key) as chunker:
+                chunks = await chunker.process_cleaned_text(cleaned_pages)
+                
+            phase2_duration = time.time() - phase2_start
+            logger.info(f"Phase 2: Metadata extraction completed in {phase2_duration:.2f}s")
+            
+            # Save final content
+            combined_chunk_text = "\n\n".join(chunk.content for chunk in chunks)
+            self._save_text_to_file(combined_chunk_text, "phase2_output_content.txt")
+            logger.info(f"Final content character count: {len(combined_chunk_text)}")
+            
+            # Calculate content preservation metrics
+            cleaned_similarity, cleaned_diffs = self._compare_texts(
+                combined_text,
+                combined_cleaned_text,
+                "original",
+                "cleaned"
+            )
+            
+            metadata_similarity, metadata_diffs = self._compare_texts(
+                combined_cleaned_text,
+                combined_chunk_text,
+                "cleaned",
+                "final"
+            )
+            
+            overall_similarity, overall_diffs = self._compare_texts(
+                combined_text,
+                combined_chunk_text,
+                "original",
+                "final"
+            )
+            
+            logger.info(f"Content preservation metrics:")
+            logger.info(f"  Phase 1 (Cleaning): {cleaned_similarity:.2%} similarity")
+            logger.info(f"  Phase 2 (Metadata): {metadata_similarity:.2%} similarity")
+            logger.info(f"  Overall: {overall_similarity:.2%} similarity")
+            
+            # Save differences for analysis
+            if cleaned_diffs:
+                self._save_text_to_file(
+                    "\n".join(cleaned_diffs),
+                    "phase1_differences.txt"
+                )
+            
+            if metadata_diffs:
+                self._save_text_to_file(
+                    "\n".join(metadata_diffs),
+                    "phase2_differences.txt"
+                )
+            
+            if overall_diffs:
+                self._save_text_to_file(
+                    "\n".join(overall_diffs),
+                    "overall_differences.txt"
+                )
+            
+            # Update metrics
+            self.metrics.total_chunks = len(chunks)
+            self.metrics.character_count = len(combined_chunk_text)
+            self.metrics.similarity_ratio = overall_similarity
+            
+            # Calculate coverage metrics
+            chunks_with_context_tags = sum(1 for c in chunks if c.context_tags)
+            chunks_with_section_number = sum(1 for c in chunks if c.section_number)
+            chunks_with_article_number = sum(1 for c in chunks if c.article_number)
+            
+            if len(chunks) > 0:
+                self.metrics.context_tag_coverage = chunks_with_context_tags / len(chunks)
+                self.metrics.section_number_coverage = chunks_with_section_number / len(chunks)
+                self.metrics.article_number_coverage = chunks_with_article_number / len(chunks)
+            
+            # Add phase-specific metrics
+            self.metrics.additional_metrics["phase1_duration"] = phase1_duration
+            self.metrics.additional_metrics["phase2_duration"] = phase2_duration
+            self.metrics.additional_metrics["total_duration"] = phase1_duration + phase2_duration
+            self.metrics.additional_metrics["phase1_similarity"] = cleaned_similarity
+            self.metrics.additional_metrics["phase2_similarity"] = metadata_similarity
+            self.metrics.additional_metrics["phase1_char_count"] = len(combined_cleaned_text)
+            
+            return chunks
+                
+        except Exception as e:
+            logger.error(f"Error in two-phase processing: {str(e)}")
+            raise
+
 
 async def main():
     """Main test execution function."""
-    test_name = f"Metadata Extraction Test {datetime.now().strftime('%Y-%m-%d')}"
+    test_name = f"Two-Phase Processing Test {datetime.now().strftime('%Y-%m-%d')}"
     enable_cache = True
     
     try:
@@ -524,25 +652,23 @@ async def main():
         # Step 1: Extract raw PDF content
         pages_text = tester.analyze_raw_pdf_content(start_page, end_page)
         
-        # Step 2: Run OCR cleaning (Phase 1)
-        cleaned_pages = await tester.analyze_ocr_cleaning(pages_text)
+        # Step 2: Run two-phase processing
+        chunks = await tester.analyze_two_phase_processing(pages_text)
         
-        # Step 3: Test metadata extraction (Phase 2)
-        chunks = await tester.analyze_metadata_extraction(cleaned_pages)
-        
-        # Step 4: Analyze final output
+        # Step 3: Analyze final output
         tester.analyze_final_output(chunks)
         
-        # Step 5: Finalize test with optional notes
+        # Step 4: Finalize test with optional notes
         notes = """
-        Test run for Phase 2: Metadata Extraction
-        - Tests extraction of metadata from pre-cleaned text
-        - Measures content preservation during extraction
+        Test run for complete two-phase processing:
+        - Phase 1: OCR text cleaning
+        - Phase 2: Metadata extraction from cleaned text
+        - Measures content preservation and performance for each phase
         - Analyzes metadata coverage and quality
         """
         tester.finalize_test(notes=notes)
         
-        logger.info("Phase 2 test run completed successfully")
+        logger.info("Two-phase processing test completed successfully")
         
     except Exception as e:
         logger.error(f"Test run failed: {str(e)}")
