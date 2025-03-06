@@ -7,6 +7,7 @@ from loguru import logger
 from tqdm import tqdm
 import httpx
 from tenacity import AsyncRetrying, stop_after_attempt, wait_exponential, retry_if_exception_type
+import re
 
 class DataIndexer:
     """Handles indexing of processed electrical code content into Azure Search."""
@@ -47,6 +48,10 @@ class DataIndexer:
         if hasattr(self, 'http_client') and self.http_client is not None:
             await self.http_client.aclose()  # Close HTTP client
             self.http_client = None
+        # Close the AsyncSearchClient to prevent unclosed session warnings
+        if hasattr(self, 'search_client') and self.search_client is not None:
+            await self.search_client.close()
+            self.search_client = None
         self.logger.debug("Cleaned up DataIndexer resources")
 
     def __init__(self, service_endpoint: str, admin_key: str, index_name: str, openai_api_key: str):
@@ -96,14 +101,18 @@ class DataIndexer:
             self.logger.error(f"Batch embedding error: Type: {type(e)}, Error: {str(e)}")
             raise
 
-    def prepare_document(self, chunk: Dict[str, Any], chunk_id: int) -> Dict[str, Any]:
+    def prepare_document(self, chunk: Dict[str, Any], chunk_id: int, blob_name: str = None) -> Dict[str, Any]:
         """Prepare a document for indexing with proper vector handling."""
         try:
             self.logger.debug(f"[prepare_document] Processing chunk {chunk_id}")
             content_vector = self.generate_embeddings(chunk["content"])
             self.logger.debug(f"[prepare_document] Generated vector with shape: {len(content_vector)}")
+            
+            # Create a unique ID, using blob_name if provided
+            doc_id = f"{blob_name}_{chunk_id}" if blob_name else f"doc_{chunk_id}"
+            
             document = {
-                "id": f"doc_{chunk_id}",
+                "id": doc_id,
                 "content": chunk["content"],
                 "page_number": chunk.get("page_number", 0),
                 "article_number": str(chunk.get("article_number") or ""),
@@ -134,12 +143,32 @@ class DataIndexer:
         if not all(isinstance(x, float) for x in document["content_vector"]):
             raise ValueError("All vector values must be float type")
 
-    async def index_documents(self, chunks: List[Dict[str, Any]], batch_size: int = 25, embed_batch_size: int = 8) -> None:
-        """Index all documents using batched embeddings and batched async upload."""
+    def _sanitize_key(self, key: str) -> str:
+        """
+        Azure Search requires that the key only contain letters, digits, underscore (_),
+        dash (-), or equal sign (=). We'll replace anything else with '_'.
+        """
+        return re.sub(r'[^0-9A-Za-z_\-=]', '_', key)
+
+    async def index_documents(
+        self,
+        chunks: List[Dict[str, Any]],
+        blob_name: Optional[str] = None,
+        batch_size: int = 25,
+        embed_batch_size: int = 8
+    ) -> None:
+        """
+        Index all documents using batched embeddings and batched async upload.
+        Now we accept an optional blob_name to form unique doc IDs.
+        """
         try:
             total_chunks = len(chunks)
-            self.logger.info(f"Starting indexing of {total_chunks} chunks")
+            self.logger.info(f"Starting indexing of {total_chunks} chunks{f' from {blob_name}' if blob_name else ''}")
             documents_to_upload = []
+
+            # We'll sanitize the blob name so it's a valid partial doc ID.
+            # If we have no blob_name, just default to "doc".
+            base_id_prefix = "doc" if not blob_name else self._sanitize_key(blob_name)
 
             for start_idx in tqdm(range(0, total_chunks, embed_batch_size), desc="Embedding chunks"):
                 end_idx = min(start_idx + embed_batch_size, total_chunks)
@@ -162,8 +191,12 @@ class DataIndexer:
                 for i, emb in enumerate(embeddings):
                     chunk_idx = start_idx + i
                     chunk = chunks[chunk_idx]
+
+                    # Construct a unique doc ID. No invalid characters allowed.
+                    doc_id = f"{base_id_prefix}_{chunk_idx}"
+
                     document = {
-                        "id": f"doc_{chunk_idx}",
+                        "id": doc_id,
                         "content": chunk.get("content", ""),
                         "page_number": chunk.get("page_number", 0),
                         "article_number": str(chunk.get("article_number") or ""),

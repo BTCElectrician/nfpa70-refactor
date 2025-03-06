@@ -22,22 +22,18 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
     Create or update an Azure Cognitive Search index with vector search enabled.
     Updated for azure-search-documents==11.5.2.
     
-    Args:
-        service_endpoint: The URL of your Azure Search service
-        admin_key: The admin API key for your search service
-        index_name: The name to give your search index
+    If the index already exists, we just update it rather than deleting it.
     """
     try:
         # Set up the client with admin credentials
         credential = AzureKeyCredential(admin_key)
         index_client = SearchIndexClient(endpoint=service_endpoint, credential=credential)
 
-        # Delete existing index if it exists (clean slate)
-        try:
-            index_client.delete_index(index_name)
-            logger.info(f"Deleted existing index '{index_name}'")
-        except Exception:
-            logger.info(f"Index '{index_name}' does not exist yet")
+        # ---------------------------------------------------------------------
+        # Remove forced delete_index. We no longer nuke the old index each time.
+        #
+        # If we want to update the existing index, just call create_or_update_index.
+        # ---------------------------------------------------------------------
 
         # Configure vector search with HNSW algorithm
         # HNSW (Hierarchical Navigable Small World) is efficient for similarity search
@@ -153,10 +149,9 @@ def create_search_index(service_endpoint: str, admin_key: str, index_name: str) 
             semantic_search=semantic_search
         )
 
-        # Create or update the index in Azure Search
-        logger.info(f"Creating search index '{index_name}' ...")
+        logger.info(f"Creating or updating search index '{index_name}' ...")
         index_client.create_or_update_index(index)
-        logger.info(f"Index '{index_name}' created successfully.")
+        logger.info(f"Index '{index_name}' created or updated successfully.")
 
     except Exception as e:
         logger.error(f"Error creating/updating index: {str(e)}")
