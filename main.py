@@ -28,14 +28,14 @@ async def async_chunk_content(pages_text, openai_api_key):
 
 def get_page_sections() -> list[tuple[int, int]]:
     """
-    Generate 10-page sections from PDF page 66 (NFPA page 70-63) to last text-content page (775).
+    Generate 10-page sections from PDF page 66 (NFPA page 70-63) to last text-content page (719).
     Returns list of (start_page, end_page) tuples.
-    Stops at page 775 to avoid processing table-only sections.
+    Stops at page 719 to avoid processing table-only sections.
     """
     sections = []
     start_page = 66  # First content page (PDF page 66 = NFPA 70-63)
-    while start_page <= 775:  # Last text content page (before tables)
-        end_page = min(start_page + 9, 775)  # 10 pages or until end of text
+    while start_page <= 719:  # Last text content page (before tables)
+        end_page = min(start_page + 9, 719)  # 10 pages or until end of text
         sections.append((start_page, end_page))
         start_page = end_page + 1
     return sections
